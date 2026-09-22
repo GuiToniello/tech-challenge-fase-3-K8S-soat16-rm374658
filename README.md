@@ -49,10 +49,11 @@ As subnets privadas não têm NAT nem rota para a Internet. Elas existem para o 
 
 | Operação | Ordem |
 |---|---|
-| Deploy | **K8S** Bootstrap (rede + EKS + addons) → **DB** Bootstrap (RDS) → **APP** (imagens no ECR) / **LAMBDA** → **K8S** K8s Apply (manifests) |
-| Destroy | **APP** / **LAMBDA** → **DB** → **K8S** |
+| Deploy | **K8S** Bootstrap (rede + EKS + addons) → **DB** Bootstrap (RDS) → **APP** Bootstrap (imagens no ECR) / **LAMBDA** → **K8S** K8s Apply (manifests), disparado automaticamente pelo APP |
+| Destroy | **APP** (nada a destruir: o ECR é manual) / **LAMBDA** → **DB** → **K8S** |
 
 - O Bootstrap deste repositório **não** aplica os manifests. Os pods precisam do RDS, para montar a connection string, e das imagens no ECR. Por isso o apply dos manifests é o workflow separado **K8s Apply**, que roda por último.
+- Depois de publicar imagens no ECR, pelo Bootstrap ou pelo Deploy, o repo APP dispara o **K8s Apply** daqui com `restart-pods = true`. Para isso ele usa um token com permissão de Actions neste repositório. É assim que os pods passam a usar a nova `:latest`.
 - O Destroy deste repositório **falha** se o RDS ainda existir. O RDS usa as subnets privadas, e o SG dele referencia o SG dos nodes, então apagar a rede antes travaria em `DependencyViolation`.
 
 ### Contrato produzido (usado pelo repo DB)
@@ -118,8 +119,8 @@ Os segredos são passados ao `k8s/.env` por variáveis de ambiente, sem interpol
 |---|---|---|
 | **Bootstrap** | Manual | `apply` da foundation → `apply` dos addons. Não aplica manifests |
 | **Deploy** | Pull Request para `main` | `validate` offline de foundation, addons e manifests (checks obrigatórios) → `plan` informativo de foundation e addons |
-| **Deploy** | Push na `main` | Mudança em `infra/**`, `deploy.yml` ou `_terraform.yml`: apply foundation → addons. Mudança em `k8s/**` ou `_k8s-apply.yml`: apply dos manifests (sem restart) |
-| **K8s Apply** | Manual (input `restart-pods`, padrão `true`) | Descobre o RDS, gera o Secret, `kubectl apply -k k8s` e, opcionalmente, `rollout restart` |
+| **Deploy** | Push na `main` | Mudança em `infra/**`, `deploy.yml` ou `_terraform.yml`: apply foundation → addons. Mudança em `k8s/**` ou `_k8s-apply.yml`: apply dos manifests com rollout restart |
+| **K8s Apply** | Manual (input `restart-pods`, padrão `true`), ou disparado pelo repo APP depois de publicar imagens | Descobre o RDS, gera o Secret, `kubectl apply -k k8s` e, opcionalmente, `rollout restart` |
 | **Destroy** | Manual, `confirm = destroy` + aprovação | Confere que o RDS e o SG dele já foram destruídos → remove o Service LoadBalancer do ingress (e espera o ELB sair) → destroy dos addons → destroy da foundation |
 
 Apply, K8s Apply e Destroy só rodam a partir da `main`. Disparados em outra branch, **falham** com erro. Os detalhes estão em [.github/workflows/README.md](.github/workflows/README.md).
@@ -132,7 +133,7 @@ Apply, K8s Apply e Destroy só rodam a partir da `main`. Disparados em outra bra
 - **Não faça merge de mudanças em `infra/**`, `deploy.yml` ou `_terraform.yml` enquanto quiser o ambiente desligado.** Se o merge acontecer, destrua de novo com o Destroy.
 - **Primeiro push:**
   - Cria a infra e depois falha no `apply-k8s`, porque o RDS do repo DB ainda não existe. Isso é esperado.
-  - Siga a ordem da seção 2: DB Bootstrap → imagens do APP → **K8s Apply**.
+  - Siga a ordem da seção 2: DB Bootstrap → APP Bootstrap, que publica as imagens e dispara o **K8s Apply**.
   - Se ainda não quiser subir nada, faça o primeiro push **antes** de configurar os secrets AWS. Os applies falham sem credenciais.
 - **Merge só em `k8s/**` com o cluster ou o DB desligados:** falha no `apply-k8s`. Quando o ambiente estiver de pé, rode o **K8s Apply**.
 - **Não use "Re-run" em um Deploy antigo:** ele reaplica o commit daquele run. Use o Bootstrap (infra) ou o K8s Apply (manifests), que aplicam a HEAD da `main`.
@@ -162,7 +163,7 @@ EKS, nodes, Load Balancer e o tráfego geram custo enquanto existem.
 **Atenção à versão do EKS:** `eks_version` é `1.32`, copiado da fase 2 ([variables.tf](infra/foundation/variables.tf)). Se essa versão já estiver fora do suporte padrão da AWS, o control plane é cobrado na tarifa de *extended support*, várias vezes a tarifa padrão. Antes do primeiro Bootstrap, confira o calendário de versões do EKS e, se preciso, suba `eks_version`.
 
 Para remover tudo:
-1. Destrua o APP/LAMBDA e o **DB**.
+1. Destrua o LAMBDA e o **DB**. O APP não tem recursos a destruir, porque o ECR é manual.
 2. Rode o workflow **Destroy** deste repositório com `confirm = destroy` e aprove.
 
 A ordem interna é addons → foundation. O bucket S3 do state não é removido.

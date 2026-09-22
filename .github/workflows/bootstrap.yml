@@ -1,6 +1,6 @@
 name: Bootstrap
 # Primeira criação da infra (VPC + EKS + addons) ou recriação após o Destroy.
-# Não aplica os manifests: rode o "K8s Apply" depois do Bootstrap do repo DB e das imagens do repo APP.
+# Não aplica os manifests: o "K8s Apply" roda depois do Bootstrap do repo DB, disparado pelo repo APP ao publicar as imagens.
 
 on:
   workflow_dispatch:

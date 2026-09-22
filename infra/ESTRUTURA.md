@@ -143,9 +143,9 @@ Ordem entre repositórios no deploy:
 1. **K8S**: Bootstrap (foundation → addons).
 2. **DB**: Bootstrap (RDS).
 3. **APP**: imagens no ECR.
-4. **K8S**: [K8s Apply](../.github/workflows/k8s-apply.yml).
+4. **K8S**: [K8s Apply](../.github/workflows/k8s-apply.yml), disparado automaticamente pelo repo APP depois do push das imagens.
 
-O K8s Apply (manual, `restart-pods` com padrão `true`) descobre o endpoint do RDS, monta o `k8s/.env` com a connection string e o `ResendSettings__ApiKey` a partir dos secrets do GitHub, roda `kubectl apply -k k8s` e, se pedido, faz o `rollout restart` das cinco APIs. O restart é necessário quando o Secret muda (`disableNameSuffixHash` mantém o mesmo nome) ou quando há imagem nova, já que os Deployments usam a tag `latest` com `imagePullPolicy: Always`. O Deploy também aplica os manifests em push na `main` que altere `k8s/**`.
+O K8s Apply (disparado pelo repo APP ou manual, `restart-pods` com padrão `true`) descobre o endpoint do RDS, monta o `k8s/.env` com a connection string e o `ResendSettings__ApiKey` a partir dos secrets do GitHub, roda `kubectl apply -k k8s` e, se pedido, faz o `rollout restart` das cinco APIs. O restart é necessário quando o Secret muda (`disableNameSuffixHash` mantém o mesmo nome) ou quando há imagem nova, já que os Deployments usam a tag `latest` com `imagePullPolicy: Always`. O Deploy também aplica os manifests, com restart, em push na `main` que altere `k8s/**`.
 
 O arquivo [k8s/infra/ingress.yml](../k8s/infra/ingress.yml) contém somente o recurso `Ingress` das APIs.
 
@@ -174,7 +174,7 @@ O CI não usa `terraform.tfvars` e aplica os defaults de `variables.tf`. Se cria
 
 EKS (control plane cobrado por hora), os dois nodes com seus discos EBS e o Load Balancer do `ingress-nginx` geram custos enquanto existem.
 
-Ordem entre repositórios: **APP** / **LAMBDA** → **DB** → **K8S**. O RDS usa as subnets privadas e o SG dele referencia o SG dos nodes; se ainda existir, o destroy da VPC falha com `DependencyViolation`.
+Ordem entre repositórios: **LAMBDA** → **DB** → **K8S**. O APP não tem recursos a destruir, porque o ECR é manual. O RDS usa as subnets privadas e o SG dele referencia o SG dos nodes; se ainda existir, o destroy da VPC falha com `DependencyViolation`.
 
 Neste repositório, rode o workflow [Destroy](../.github/workflows/destroy.yml) com `confirm = destroy` e aprove no Environment `destroy`. A sequência é:
 1. `db-check`: falha se o RDS `techchallenge-oficina-postgres` ou o SG `techchallenge-oficina-rds-sg` ainda existirem.

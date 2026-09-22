@@ -46,17 +46,6 @@ jobs:
           cp k8s/.env.example k8s/.env
           kubectl kustomize k8s > /dev/null
 
-      - uses: aws-actions/configure-aws-credentials@v6
-        if: inputs.command == 'apply'
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Update kubeconfig
-        if: inputs.command == 'apply'
-        run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
-
       - name: Conferir secrets e variables
         if: inputs.command == 'apply'
         env:
@@ -75,6 +64,17 @@ jobs:
             fi
           done
           exit $missing
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        if: inputs.command == 'apply'
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Update kubeconfig
+        if: inputs.command == 'apply'
+        run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
 
       # Contrato do repo DB: o endpoint é descoberto pelo identifier fixo do RDS
       - name: Descobrir endpoint do RDS

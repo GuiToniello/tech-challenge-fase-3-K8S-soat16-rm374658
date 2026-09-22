@@ -102,4 +102,6 @@ jobs:
     uses: ./.github/workflows/_k8s-apply.yml
     with:
       command: apply
+      # Sempre com restart: ConfigMaps/Secret não têm hash e este run pode substituir um K8s Apply pendente do repo APP
+      restart-pods: true
     secrets: inherit

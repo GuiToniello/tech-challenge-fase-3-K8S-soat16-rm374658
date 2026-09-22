@@ -60,8 +60,8 @@ Pré-requisitos, nesta ordem:
 3. Imagens no ECR: publicadas pelo repositório [APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658).
 
 A aplicação é feita pelo CI:
-- Workflow **K8s Apply** ([k8s-apply.yml](../.github/workflows/k8s-apply.yml), manual): descobre o endpoint do RDS, gera o `k8s/.env`, roda `kubectl apply -k k8s` e, com o input `restart-pods` (padrão `true`), faz o rollout restart das 5 APIs.
-- Workflow **Deploy**, em push na `main` com mudança em `k8s/**`: roda o mesmo apply, **sem** restart dos pods.
+- Workflow **K8s Apply** ([k8s-apply.yml](../.github/workflows/k8s-apply.yml), disparado pelo repo APP depois de cada push de imagens, ou manual): descobre o endpoint do RDS, gera o `k8s/.env`, roda `kubectl apply -k k8s` e, com o input `restart-pods` (padrão `true`), faz o rollout restart das 5 APIs.
+- Workflow **Deploy**, em push na `main` com mudança em `k8s/**`: roda o mesmo apply, com rollout restart das 5 APIs.
 
 Apply só a partir da `main`. Detalhes em [.github/workflows/README.md](../.github/workflows/README.md).
 
@@ -102,7 +102,7 @@ As imagens são construídas e publicadas no ECR pelo repositório [APP](https:/
 - 903936907231.dkr.ecr.us-east-1.amazonaws.com/techchallenge-oficina-getos:latest
 - 903936907231.dkr.ecr.us-east-1.amazonaws.com/techchallenge-oficina-status:latest
 
-Como a tag não muda, uma imagem nova no ECR não altera os manifests: os pods só a puxam depois de um rollout restart (K8s Apply com `restart-pods = true`).
+Como a tag não muda, uma imagem nova no ECR não altera os manifests: os pods só a puxam depois de um rollout restart, feito pelo K8s Apply com `restart-pods = true`. O repo APP dispara esse K8s Apply automaticamente depois de cada push de imagens.
 
 ### 4.3 Autenticação no ECR privado
 A role IAM dos nodes tem a policy gerenciada `AmazonEC2ContainerRegistryReadOnly` ([infra/foundation/iam.tf](../infra/foundation/iam.tf)), permitindo que o kubelet faça pull das imagens privadas do ECR sem Secret Kubernetes.
@@ -121,7 +121,7 @@ No CI, o K8s Apply gera o `k8s/.env`:
 
 O `k8s/.env` é ignorado pelo Git e nunca deve ser versionado; apenas o `.env.example` é versionado.
 
-Como o `kustomization.yaml` usa `disableNameSuffixHash: true`, o nome do Secret não muda quando o conteúdo muda, e os Deployments não reiniciam sozinhos. O mesmo vale para os ConfigMaps: eles são lidos via `envFrom` e não têm hash no nome. Depois de trocar um valor, rode o K8s Apply com `restart-pods = true`. Isso vale para a senha do RDS e também para um ConfigMap alterado em PR, cujo Deploy no push aplica sem restart.
+Como o `kustomization.yaml` usa `disableNameSuffixHash: true`, o nome do Secret não muda quando o conteúdo muda, e os Deployments não reiniciam sozinhos. O mesmo vale para os ConfigMaps: eles são lidos via `envFrom` e não têm hash no nome. Por isso, o apply de push em `k8s/**` sempre faz o rollout restart. Depois de trocar um valor fora do Git, como a senha do RDS ou a chave do Resend, rode o K8s Apply com `restart-pods = true`.
 
 ## 6. Regras de HPA aplicadas
 Foi seguido o requisito informado:

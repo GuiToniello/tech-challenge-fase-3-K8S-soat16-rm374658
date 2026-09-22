@@ -136,7 +136,7 @@ Ele **não** aplica os manifests. A ordem completa entre repositórios está no 
 | | `plan-addons` (`needs: validate-addons`) | `_terraform.yml` plan | Informativo. Exige o cluster de pé. Pulado em PR de fork |
 | `push` na `main` | `changes` | `dorny/paths-filter@v4` | Separa `infra` (`infra/**`, `_terraform.yml`, `deploy.yml`) de `k8s` (`k8s/**`, `_k8s-apply.yml`) |
 | | `apply-foundation` → `apply-addons` | `_terraform.yml` apply | Se `infra` mudou |
-| | `apply-k8s` | `_k8s-apply.yml` apply, sem restart | Se `k8s` mudou. Espera a infra quando as duas mudam (`!failure() && !cancelled()`) |
+| | `apply-k8s` | `_k8s-apply.yml` apply **com restart** (`restart-pods: true`) | Se `k8s` mudou. Espera a infra quando as duas mudam (`!failure() && !cancelled()`) |
 
 - **PR sem filtro de paths:** o `pull_request` não usa filtro de paths de propósito. Se usasse, os checks obrigatórios ficariam *pending* em PRs que só mexem em documentação.
 - **Não use "Re-run" em um Deploy antigo para infra:** ele reaplica o `github.sha` daquele run. Para aplicar a HEAD da infra, use o Bootstrap. O apply dos manifests sempre usa a ponta da `main`, então o re-run dele é seguro.
@@ -146,11 +146,13 @@ Ele **não** aplica os manifests. A ordem completa entre repositórios está no 
 - **Gatilho:** `workflow_dispatch`, com o input `restart-pods` (padrão `true`).
 - **Job:** `apply` → `_k8s-apply.yml` com `command: apply`.
 
-Use-o no primeiro deploy dos manifests, depois do DB e das imagens. Use também, com `restart-pods = true`, nestes casos:
-- imagem nova no ECR;
+O repo [APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658) dispara este workflow automaticamente, com `restart-pods = true`, depois de publicar imagens no ECR. Ele usa `gh workflow run` com um token *fine-grained* que tem **Actions: Read and write** neste repositório. Esse token fica no secret `K8S_REPO_TOKEN` do APP. Nada precisa ser configurado aqui.
+
+Rode manualmente no primeiro deploy dos manifests, se as imagens já estiverem no ECR. Rode também, com `restart-pods = true`, nestes casos:
+- imagem nova no ECR, se o dispatch do APP não tiver rodado;
 - troca de `RDS_PASSWORD` ou `RESEND_API_KEY`;
 - RDS recriado;
-- ConfigMap alterado em PR. O Deploy no push aplica sem restart, e os pods só leem o `envFrom` novo ao reiniciar.
+- Qualquer mudança que precise reiniciar os pods sem ter passado pelo Deploy. O Deploy de push em `k8s/**` já aplica **com** restart, porque ConfigMaps e Secret não têm hash no nome e esse run pode substituir, na fila, um K8s Apply pendente disparado pelo APP.
 
 Mudanças no spec do Deployment (imagem, recursos, probes) já fazem rollout sozinhas.
 

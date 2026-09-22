@@ -109,7 +109,7 @@ terraform validate
 
 ## 8. Destrua o ambiente
 
-Antes, destrua o APP/LAMBDA e o repositório DB. O RDS usa as subnets privadas e referencia o SG dos nodes: com ele de pé, o destroy da foundation falha com `DependencyViolation`.
+Antes, destrua o LAMBDA e o repositório DB. O APP não tem recursos a destruir, porque o ECR é manual. O RDS usa as subnets privadas e referencia o SG dos nodes: com ele de pé, o destroy da foundation falha com `DependencyViolation`.
 
 Depois, para evitar custos:
 1. Remova o Service LoadBalancer do ingress e espere o ELB sair. Ele é criado pelo Kubernetes e não pelo Terraform, e se ficar para trás trava a VPC.

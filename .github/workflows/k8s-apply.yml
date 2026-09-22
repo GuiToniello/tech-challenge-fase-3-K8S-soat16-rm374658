@@ -1,5 +1,6 @@
 name: K8s Apply
 # Aplica os manifests (k8s/) no EKS. Requer: infra deste repo, RDS do repo DB e imagens no ECR (repo APP).
+# Também é disparado pelo repo APP (gh workflow run, restart-pods=true) depois de cada push de imagens.
 
 on:
   workflow_dispatch:
