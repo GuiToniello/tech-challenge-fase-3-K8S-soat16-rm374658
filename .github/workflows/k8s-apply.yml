@@ -1,0 +1,22 @@
+name: K8s Apply
+# Aplica os manifests (k8s/) no EKS. Requer: infra deste repo, RDS do repo DB e imagens no ECR (repo APP).
+
+on:
+  workflow_dispatch:
+    inputs:
+      restart-pods:
+        description: "Reiniciar os pods das 5 APIs após o apply (imagem nova no ECR ou Secret alterado)"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    uses: ./.github/workflows/_k8s-apply.yml
+    with:
+      command: apply
+      restart-pods: ${{ inputs.restart-pods }}
+    secrets: inherit

@@ -1,0 +1,69 @@
+name: "[Reusable] Terraform"
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Pasta do Terraform (infra/foundation ou infra/addons)"
+        required: true
+        type: string
+      command:
+        description: "Comando do Terraform (validate, plan, apply ou destroy)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    concurrency:
+      # Fora da main, apply/destroy usam um grupo próprio: falham no bloqueio abaixo sem cancelar um job legítimo pendente
+      group: ${{ (inputs.command == 'apply' || inputs.command == 'destroy') && (github.ref == 'refs/heads/main' && format('terraform-{0}', inputs.working-directory) || format('terraform-blocked-{0}', github.run_id)) || format('terraform-{0}-{1}-{2}', inputs.working-directory, inputs.command, github.ref) }}
+      cancel-in-progress: ${{ inputs.command == 'validate' || inputs.command == 'plan' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      # apply/destroy só a partir da main, mesmo quando disparados manualmente em outra branch
+      - name: Bloquear apply/destroy fora da main
+        if: (inputs.command == 'apply' || inputs.command == 'destroy') && github.ref != 'refs/heads/main'
+        env:
+          COMMAND: ${{ inputs.command }}
+        run: |
+          echo "::error::$COMMAND só pode rodar a partir da branch main (ref atual: $GITHUB_REF)"
+          exit 1
+        working-directory: .
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        if: inputs.command != 'validate'
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -input=false ${{ inputs.command == 'validate' && '-backend=false' || '' }}
+
+      - name: Terraform Format
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      # Plan especulativo (PR): não grava state, então roda sem lock
+      - name: Terraform Plan
+        if: inputs.command == 'plan'
+        run: terraform plan -input=false -lock=false
+
+      - name: Terraform ${{ inputs.command }}
+        if: inputs.command == 'apply' || inputs.command == 'destroy'
+        run: terraform ${{ inputs.command }} -auto-approve -input=false -lock-timeout=15m

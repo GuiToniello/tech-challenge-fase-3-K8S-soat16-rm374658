@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: status-api-config
+  namespace: oficina
+  labels:
+    app.kubernetes.io/name: status-api
+    app.kubernetes.io/part-of: techchallenge-oficina
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  ASPNETCORE_URLS: "http://+:8080"
+  AllowedHosts: "*"
+  Logging__LogLevel__Default: "Information"
+  Logging__LogLevel__Microsoft__AspNetCore: "Warning"

@@ -1,0 +1,25 @@
+name: Bootstrap
+# Primeira criação da infra (VPC + EKS + addons) ou recriação após o Destroy.
+# Não aplica os manifests: rode o "K8s Apply" depois do Bootstrap do repo DB e das imagens do repo APP.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-foundation:
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/foundation
+      command: apply
+    secrets: inherit
+
+  terraform-addons:
+    needs: terraform-foundation
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/addons
+      command: apply
+    secrets: inherit

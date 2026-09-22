@@ -1,0 +1,105 @@
+name: Deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------- Pull Request ----------
+
+  # Checks obrigatórios da main: não usam credenciais AWS
+  validate-foundation:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/foundation
+      command: validate
+    secrets: inherit
+
+  validate-addons:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/addons
+      command: validate
+    secrets: inherit
+
+  validate-k8s:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/_k8s-apply.yml
+    with:
+      command: validate
+    secrets: inherit
+
+  # Informativos: dependem da AWS (o plan do addons exige o cluster EKS de pé). Não rodam em PR de fork (sem secrets)
+  plan-foundation:
+    needs: validate-foundation
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/foundation
+      command: plan
+    secrets: inherit
+
+  plan-addons:
+    needs: validate-addons
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/addons
+      command: plan
+    secrets: inherit
+
+  # ---------- Push na main ----------
+
+  changes:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      infra: ${{ steps.filter.outputs.infra }}
+      k8s: ${{ steps.filter.outputs.k8s }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            infra:
+              - 'infra/**'
+              - '.github/workflows/_terraform.yml'
+              - '.github/workflows/deploy.yml'
+            k8s:
+              - 'k8s/**'
+              - '.github/workflows/_k8s-apply.yml'
+
+  apply-foundation:
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/foundation
+      command: apply
+    secrets: inherit
+
+  apply-addons:
+    needs: [changes, apply-foundation]
+    if: needs.changes.outputs.infra == 'true'
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/addons
+      command: apply
+    secrets: inherit
+
+  # Roda depois da infra quando as duas mudam; sozinho quando só k8s/ mudou
+  apply-k8s:
+    needs: [changes, apply-addons]
+    if: ${{ !failure() && !cancelled() && needs.changes.outputs.k8s == 'true' }}
+    uses: ./.github/workflows/_k8s-apply.yml
+    with:
+      command: apply
+    secrets: inherit

@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: oficina
+
+resources:
+  - base/namespace.yml
+  - features/approval-api/configmap.yml
+  - features/approval-api/deployment.yml
+  - features/approval-api/hpa.yml
+  - features/approval-api/service.yml
+  - features/createos-api/configmap.yml
+  - features/createos-api/deployment.yml
+  - features/createos-api/hpa.yml
+  - features/createos-api/service.yml
+  - features/getos-api/configmap.yml
+  - features/getos-api/deployment.yml
+  - features/getos-api/hpa.yml
+  - features/getos-api/service.yml
+  - features/monolith-api/configmap.yml
+  - features/monolith-api/deployment.yml
+  - features/monolith-api/hpa.yml
+  - features/monolith-api/service.yml
+  - features/status-api/configmap.yml
+  - features/status-api/deployment.yml
+  - features/status-api/hpa.yml
+  - features/status-api/service.yml
+  - infra/ingress.yml
+
+secretGenerator:
+  - name: oficina-api-secrets
+    envs:
+      - .env
+
+generatorOptions:
+  disableNameSuffixHash: true

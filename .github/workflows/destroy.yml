@@ -1,0 +1,111 @@
+name: Destroy
+# Destrutivo: exige confirmação por input e aprovação no Environment "destroy".
+# Ordem entre repos: destrua o repo DB antes (o RDS usa as subnets privadas e referencia o SG dos nodes).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Digite "destroy" para confirmar a remoção do EKS, addons e VPC'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # Falha visível em vez de um run "verde" que não destruiu nada
+  reject:
+    if: inputs.confirm != 'destroy' || github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::Destroy não executado: informe confirm=destroy e rode a partir da branch main."
+          exit 1
+
+  # Evita destruir os addons e depois travar no DependencyViolation da VPC com o RDS ainda de pé
+  db-check:
+    if: inputs.confirm == 'destroy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verificar se o RDS do repo DB já foi destruído
+        env:
+          RDS_INSTANCE_IDENTIFIER: ${{ vars.RDS_INSTANCE_IDENTIFIER }}
+        run: |
+          if [ -z "$RDS_INSTANCE_IDENTIFIER" ]; then
+            echo "::error::Variable RDS_INSTANCE_IDENTIFIER não configurada. Não é possível verificar o RDS."
+            exit 1
+          fi
+          count=$(aws rds describe-db-instances --query "length(DBInstances[?DBInstanceIdentifier=='$RDS_INSTANCE_IDENTIFIER'])" --output text)
+          if [ "$count" != "0" ]; then
+            echo "::error::O RDS $RDS_INSTANCE_IDENTIFIER ainda existe. Rode o Destroy do repo DB antes."
+            exit 1
+          fi
+          # SG do RDS (repo DB): a regra dele referencia o SG dos nodes e impediria o destroy da foundation
+          sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=techchallenge-oficina-rds-sg --query 'length(SecurityGroups)' --output text)
+          if [ "$sg" != "0" ]; then
+            echo "::error::O SG techchallenge-oficina-rds-sg (repo DB) ainda existe. Rode o Destroy do repo DB antes."
+            exit 1
+          fi
+
+  gate:
+    needs: db-check
+    runs-on: ubuntu-latest
+    environment: destroy
+    steps:
+      - run: echo "Destroy da infra K8S aprovado"
+
+  # O Load Balancer do ingress-nginx é criado pelo Kubernetes, não pelo Terraform. Remover o Service e esperar
+  # o finalizer garante que o ELB saia antes do cluster, evitando ELB órfão (custo) e VPC travada no destroy
+  delete-load-balancer:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: azure/setup-kubectl@v5
+
+      - name: Remover o Service LoadBalancer do ingress-nginx
+        env:
+          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+        run: |
+          if [ -z "$EKS_CLUSTER_NAME" ]; then
+            echo "::error::Variable EKS_CLUSTER_NAME não configurada."
+            exit 1
+          fi
+          if ! out=$(aws eks describe-cluster --name "$EKS_CLUSTER_NAME" 2>&1); then
+            if grep -q ResourceNotFoundException <<< "$out"; then
+              echo "Cluster $EKS_CLUSTER_NAME não encontrado: nada a remover."
+              exit 0
+            fi
+            echo "::error::$out"
+            exit 1
+          fi
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          kubectl delete service ingress-nginx-controller -n ingress-nginx --ignore-not-found --wait=true --timeout=10m
+
+  terraform-destroy-addons:
+    needs: delete-load-balancer
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/addons
+      command: destroy
+    secrets: inherit
+
+  terraform-destroy-foundation:
+    needs: terraform-destroy-addons
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      working-directory: infra/foundation
+      command: destroy
+    secrets: inherit
