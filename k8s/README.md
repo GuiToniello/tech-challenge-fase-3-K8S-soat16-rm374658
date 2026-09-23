@@ -12,7 +12,6 @@ Estrutura:
 - [kustomization.yaml](kustomization.yaml): lista os recursos, define o namespace `oficina` e gera o Secret das APIs.
 - [.env.example](.env.example): template do `k8s/.env` usado pelo `secretGenerator` (seção 5).
 - [base/namespace.yml](base/namespace.yml)
-- [infra/ingress.yml](infra/ingress.yml): contém só o Ingress. Não confundir com a pasta `infra/` da raiz, que é o Terraform.
 - [features/monolith-api](features/monolith-api)
 - [features/approval-api](features/approval-api)
 - [features/createos-api](features/createos-api)
@@ -27,21 +26,19 @@ Cada pasta de API contém:
 
 ### 2.1 Arquitetura no cluster
 - Cada API tem um Deployment. Ele começa com uma réplica e verifica a saúde em `/health`.
-- Cada Deployment é acessado internamente por um Service do tipo `ClusterIP`, que não fica exposto diretamente na Internet.
-- O Ingress recebe as requisições HTTP e direciona cada caminho para o Service da API correspondente.
+- Cada Deployment é exposto por um Service do tipo `NodePort`, com porta fixa (30080–30084). A porta só aceita tráfego de dentro da VPC, então o Service não fica exposto diretamente na Internet.
+- O API Gateway recebe as requisições HTTPS e, pelo VPC Link e pelo NLB interno (criados pela foundation), entrega cada caminho no NodePort da API correspondente (seção 8).
 - Os ConfigMaps guardam configurações não sensíveis. O Secret compartilhado guarda os dados sensíveis (conexão com o RDS e chave do Resend).
 - Um HPA acompanha CPU e memória e ajusta cada Deployment entre 1 e 10 réplicas, com base nas métricas do Metrics Server.
 
 ```mermaid
 flowchart TD
-  Request[Requisicoes HTTP] --> Controller[NGINX Ingress Controller]
+  Request[Requisicoes HTTPS] --> Gateway[API Gateway\nHTTP API]
+  Gateway --> NLB[VPC Link e NLB interno\ncriados pela foundation]
 
   subgraph EKS[Cluster Amazon EKS]
-    Controller --> Ingress[Ingress oficina-apis]
-
     subgraph Oficina[Namespace oficina]
-      Ingress --> Services[Services ClusterIP\nUma entrada por API]
-      Services --> Pods[Pods das APIs\nmonolith, approval, createos, getos e status]
+      Services[Services NodePort\n30080 a 30084, um por API] --> Pods[Pods das APIs\nmonolith, approval, createos, getos e status]
       Deployments[Deployments\nUm por API] --> Pods
 
       ConfigMaps[ConfigMaps\nConfiguracoes nao sensiveis] --> Deployments
@@ -51,11 +48,13 @@ flowchart TD
 
     Metrics[Metrics Server] --> HPA
   end
+
+  NLB --> Services
 ```
 
 ## 3. Ordem de aplicação
 Pré-requisitos, nesta ordem:
-1. Cluster e addons: workflow **Bootstrap** deste repositório (foundation → addons). O Ingress Controller e o Metrics Server são instalados pelo Terraform via Helm, em `infra/addons`.
+1. Cluster, API Gateway e addons: workflow **Bootstrap** deste repositório (foundation → addons). O API Gateway, o VPC Link e o NLB são criados pela foundation. O Metrics Server é instalado pelo Terraform via Helm, em `infra/addons`.
 2. RDS: **Bootstrap** do repositório [DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658).
 3. Imagens no ECR: publicadas pelo repositório [APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658).
 
@@ -71,19 +70,17 @@ Para aplicar manualmente, a partir da raiz do repositório e com o `k8s/.env` pr
 Não use `kubectl apply -f` por pasta: o Secret `oficina-api-secrets` só é gerado pelo Kustomize.
 
 Comandos para verificação:
-- `kubectl get pods,svc,hpa,ingress -n oficina`
-- `kubectl get ingressclass`
-- `kubectl get pods,svc -n ingress-nginx`
+- `kubectl get pods,svc,hpa -n oficina`
 
-Opcional (ambiente local): para acessar via localhost, encaminhe as portas do ingress controller:
-- `kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 80:80 443:443`
+Opcional: para acessar uma API via localhost sem passar pelo API Gateway, encaminhe a porta do Service:
+- `kubectl port-forward -n oficina service/monolith-api 8080:80` (depois, `http://localhost:8080/health`)
 
 ## 4. Recursos criados por API
 Para cada API foram criados os seguintes recursos:
 1. ConfigMap `<api>-config` com configurações não sensíveis (`ASPNETCORE_ENVIRONMENT=Production`, `ASPNETCORE_URLS=http://+:8080`, logging).
 2. Secret comum `oficina-api-secrets`, gerado pelo Kustomize a partir do `k8s/.env` (seção 5).
 3. Deployment com 1 réplica inicial, porta 8080, probes (startup, liveness e readiness) em `/health` e recursos de 100m/128Mi (requests) e 500m/512Mi (limits).
-4. Service do tipo ClusterIP (porta 80 → 8080).
+4. Service do tipo NodePort (porta 80 → 8080, com `nodePort` fixo; tabela na seção 8).
 5. HPA (autoscaling/v2).
 6. Pull das imagens privadas no ECR usando a role IAM dos nodes do EKS.
 
@@ -142,30 +139,32 @@ Aplicado em:
 ## 7. Namespace
 Todos os recursos ficam no namespace `oficina`, definido em [base/namespace.yml](base/namespace.yml) e forçado pelo `namespace` do [kustomization.yaml](kustomization.yaml).
 
-## 8. Ingress e acesso externo
-O Ingress `oficina-apis` expõe as APIs via HTTP fora do cluster:
-- [infra/ingress.yml](infra/ingress.yml)
+## 8. Acesso externo (API Gateway)
+O acesso de fora do cluster é feito pelo Amazon API Gateway (HTTP API `techchallenge-oficina-api`), criado pelo Terraform da foundation ([api-gateway.tf](../infra/foundation/api-gateway.tf) e [nlb.tf](../infra/foundation/nlb.tf)). Não há Ingress nem Ingress Controller.
+
+Caminho de uma requisição: API Gateway → VPC Link → NLB interno → NodePort em qualquer node → Service → pod.
 
 Configuração aplicada:
-1. Sem campo `host`, permitindo o hostname DNS público gerado pela AWS.
-2. Roteamento por path (regex) para cada API.
-3. Reescrita de URL para remover o prefixo antes de encaminhar ao backend.
-4. Backends apontando para os Services ClusterIP na porta 80.
-5. `ingressClassName: nginx`, que referencia o controller ingress-nginx instalado pelo Terraform via Helm (`infra/addons`). O Load Balancer do controller fica nas subnets públicas (tag `kubernetes.io/role/elb`).
+1. Uma rota `ANY /<api>/{proxy+}` por API, no stage `$default`.
+2. A integração remove o prefixo antes de encaminhar ao backend (`overwrite:path`): `/monolith/api/clientes` chega à API como `/api/clientes`.
+3. O header `Authorization` é repassado, e o JWT continua sendo validado pelas APIs. O gateway não tem authorizer.
+4. Cada API tem um listener e um target group no NLB, na mesma porta do NodePort. As portas ficam em `local.api_node_ports` ([infra/foundation/locals.tf](../infra/foundation/locals.tf)) e **precisam ser iguais** ao `nodePort` dos `service.yml`.
 
-Rotas disponíveis:
-1. http://<hostname-do-load-balancer>/monolith
-2. http://<hostname-do-load-balancer>/approval
-3. http://<hostname-do-load-balancer>/createos
-4. http://<hostname-do-load-balancer>/getos
-5. http://<hostname-do-load-balancer>/status
+| API | Rota | NodePort |
+|---|---|---|
+| monolith-api | `https://<id>.execute-api.us-east-1.amazonaws.com/monolith/...` | 30080 |
+| approval-api | `https://<id>.execute-api.us-east-1.amazonaws.com/approval/...` | 30081 |
+| createos-api | `https://<id>.execute-api.us-east-1.amazonaws.com/createos/...` | 30082 |
+| getos-api | `https://<id>.execute-api.us-east-1.amazonaws.com/getos/...` | 30083 |
+| status-api | `https://<id>.execute-api.us-east-1.amazonaws.com/status/...` | 30084 |
 
-Checklist de confirmação do controller:
-1. Validar classe: `kubectl get ingressclass`.
-2. Validar pods do controller: `kubectl get pods -n ingress-nginx`.
-3. Validar service de entrada: `kubectl get svc -n ingress-nginx`.
+O endpoint só atende HTTPS. Um prefixo sozinho (`/monolith` ou `/monolith/`) responde 404, porque não casa com `{proxy+}`. O Swagger UI de cada API busca `/swagger/v1/swagger.json` pela raiz, então não abre atrás do prefixo, mas `/<api>/swagger/v1/swagger.json` funciona.
 
-O hostname do Load Balancer aparece na coluna `EXTERNAL-IP` de `kubectl get svc -n ingress-nginx`.
+Checklist de confirmação, com o ambiente criado:
+1. URL da API: output `api_gateway_endpoint` da foundation, ou `aws apigatewayv2 get-apis --query "Items[?Name=='techchallenge-oficina-api'].ApiEndpoint" --output text`.
+2. Health de cada API: `curl.exe -i "<endpoint>/monolith/health"` (e `/approval`, `/createos`, `/getos` e `/status`) → 200.
+3. Autenticação passando pelo gateway: `curl.exe -i "<endpoint>/monolith/api/clientes"` → 401 sem token e 200 com o token do Auth0 (`Authorization: Bearer <token>`).
+4. Target groups `techchallenge-oficina-<api>` `healthy` no console do EC2 (Target Groups).
 
 ## 9. Validação
 Para validar os manifests sem acessar a AWS, a partir da raiz do repositório:
@@ -181,13 +180,11 @@ O build deve gerar:
 - Namespace `oficina`.
 - ConfigMaps das APIs.
 - Secret `oficina-api-secrets`, gerado a partir do `k8s/.env`.
-- Deployments, Services e HPAs das cinco APIs.
-- Ingress das APIs.
+- Deployments, Services (`NodePort`) e HPAs das cinco APIs.
 
 ## 10. Finalização
 Antes de promover para ambientes compartilhados (qa/homolog/prod), recomenda-se:
 1. Trocar a tag `latest` por tags versionadas publicadas pelo repositório APP, para ter deploys rastreáveis e rollback.
 2. Manter a senha do RDS e a chave do Resend apenas nos secrets do GitHub (`RDS_PASSWORD`, `RESEND_API_KEY`).
 3. Revisar requests/limits de CPU e memória conforme a carga real. O node group tem 2 nodes `t3.small` fixos (min/desired/max 2/2/2), então o HPA pode criar pods que ficam `Pending` por falta de capacidade.
-4. Garantir que o `infra/addons` esteja aplicado (Ingress Controller e Metrics Server) antes do apply dos manifests.
-5. Se for necessário expor portas distintas por API (ex.: localhost:7194), usar estratégia alternativa (NodePort/LoadBalancer ou configuração TCP do controller), pois o Ingress HTTP padrão expõe em 80/443.
+4. Garantir que a foundation (API Gateway e NLB) e o `infra/addons` (Metrics Server) estejam aplicados antes do apply dos manifests.

@@ -37,9 +37,9 @@ flowchart TD
   end
 
   KA[k8s-apply.yml\nmanual + restart-pods] --> K
-  D[destroy.yml\nmanual + confirm] --> DC[db-check] --> G[gate\nenvironment destroy] --> LB[delete-load-balancer]
-  LB -->|addons destroy| T
-  LB -.->|depois foundation destroy| T
+  D[destroy.yml\nmanual + confirm] --> DC[db-check] --> G[gate\nenvironment destroy]
+  G -->|addons destroy| T
+  G -.->|depois foundation destroy| T
 ```
 
 > Convenção: workflows que começam com `_` são internos, chamados com `uses: ./.github/workflows/_x.yml`.
@@ -165,12 +165,11 @@ Mudanças no spec do Deployment (imagem, recursos, probes) já fazem rollout soz
 | `reject` | `confirm` ≠ `destroy` ou branch ≠ `main` | **Falha** com erro, em vez de terminar verde sem ter destruído nada |
 | `db-check` | `confirm` = `destroy` na `main` | **Falha** em três casos: a var `RDS_INSTANCE_IDENTIFIER` está vazia, o RDS ainda existe, ou o SG `techchallenge-oficina-rds-sg` ainda existe. Assim o destroy não remove os addons para depois travar no `DependencyViolation` da rede |
 | `gate` | depois do `db-check` | `environment: destroy`: aprovação manual. É um job à parte porque um job com `uses:` não aceita `environment` |
-| `delete-load-balancer` | depois do `gate` | Se o cluster existir, roda `kubectl delete service ingress-nginx-controller -n ingress-nginx --wait`. O finalizer do Service só libera depois que o ELB (criado pelo Kubernetes, não pelo Terraform) é removido, o que evita ELB órfão e VPC travada |
-| `terraform-destroy-addons` → `terraform-destroy-foundation` | depois do `delete-load-balancer` | `_terraform.yml` destroy |
+| `terraform-destroy-addons` → `terraform-destroy-foundation` | depois do `gate` | `_terraform.yml` destroy. A foundation leva junto o API Gateway, o VPC Link e o NLB; como nenhum Load Balancer é criado pelo Kubernetes, não há o que limpar antes |
 
 Configure o environment `destroy` **antes** do primeiro uso, com *Required reviewers* e *Deployment branches* restrito a `main`. Se ele não existir, o GitHub o cria sem proteção.
 
-**Não dispare o Destroy com Deploy, Bootstrap ou K8s Apply em andamento.** Os jobs de destroy dividem os grupos de concorrência com os applies, e um run novo pode substituir um destroy pendente. Se o Destroy terminar *cancelled* ou falhar depois do `delete-load-balancer`, rode-o de novo. Para desistir e restaurar o LB do ingress, use `terraform apply -replace=helm_release.ingress_nginx` em `infra/addons`. O Bootstrap sozinho não recria o Service.
+**Não dispare o Destroy com Deploy, Bootstrap ou K8s Apply em andamento.** Os jobs de destroy dividem os grupos de concorrência com os applies, e um run novo pode substituir um destroy pendente. Se o Destroy terminar *cancelled* ou falhar no meio, rode-o de novo.
 
 ---
 
@@ -184,7 +183,7 @@ Configure em **Settings → Secrets and variables → Actions**:
 | `RDS_PASSWORD` | Secret | `_k8s-apply.yml`: connection string. Igual à do repo DB |
 | `RESEND_API_KEY` | Secret | `_k8s-apply.yml` |
 | `AWS_REGION` | Variable | Todos (`us-east-1`) |
-| `EKS_CLUSTER_NAME` | Variable | `_k8s-apply.yml` e `destroy.yml` (`techchallenge-oficina-eks`) |
+| `EKS_CLUSTER_NAME` | Variable | `_k8s-apply.yml` (`techchallenge-oficina-eks`) |
 | `RDS_INSTANCE_IDENTIFIER` | Variable | `_k8s-apply.yml` e `destroy.yml` (`techchallenge-oficina-postgres`) |
 | `RDS_DATABASE` / `RDS_USERNAME` | Variable | `_k8s-apply.yml` (`oficina` / `sa`) |
 

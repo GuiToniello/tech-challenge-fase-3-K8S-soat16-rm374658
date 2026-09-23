@@ -1,6 +1,6 @@
 # tech-challenge-fase-3-K8S-soat16-rm374658
 
-Infraestrutura de rede e Kubernetes do projeto **Tech Challenge Oficina** (SOAT16, fase 3). O Terraform deste repositório cria na AWS a VPC, o Amazon EKS e os addons do cluster. Os manifests Kubernetes das cinco APIs também ficam aqui, e tudo é mantido por pipelines próprias no GitHub Actions.
+Infraestrutura de rede e Kubernetes do projeto **Tech Challenge Oficina** (SOAT16, fase 3). O Terraform deste repositório cria na AWS a VPC, o Amazon EKS, o Amazon API Gateway (acesso externo às APIs) e os addons do cluster. Os manifests Kubernetes das cinco APIs também ficam aqui, e tudo é mantido por pipelines próprias no GitHub Actions.
 
 O repositório não usa código nem state de outro repositório: tem os próprios Terraform states, a própria configuração e os próprios workflows. Ele se relaciona com outros três repositórios:
 - **[DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658)**: cria o Amazon RDS dentro da rede deste repositório.
@@ -13,16 +13,17 @@ Tudo fica na AWS, região `us-east-1`, em duas configurações Terraform indepen
 
 | Configuração | State | Recursos |
 |---|---|---|
-| [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.32), node group `t3.small` (2/2/2) e access entries |
-| [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | `ingress-nginx` (Load Balancer público) e Metrics Server, via Helm |
+| [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.32), node group `t3.small` (2/2/2), access entries e o acesso externo: API Gateway (HTTP API), VPC Link e NLB interno |
+| [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | Metrics Server, via Helm |
 
-Os manifests em [k8s/](k8s) criam o namespace `oficina` e, para cada uma das cinco APIs (monolith, approval, createos, getos, status), um ConfigMap, um Deployment, um Service e um HPA. Também criam o Ingress `oficina-apis` e o Secret `oficina-api-secrets`.
+Os manifests em [k8s/](k8s) criam o namespace `oficina` e, para cada uma das cinco APIs (monolith, approval, createos, getos, status), um ConfigMap, um Deployment, um Service `NodePort` e um HPA. Também criam o Secret `oficina-api-secrets`.
 
 ```mermaid
 flowchart TD
-  Internet[Internet] -->|HTTP| LoadBalancer[Load Balancer publico\ningress-nginx]
+  Internet[Internet]
 
   subgraph AWS[AWS - us-east-1]
+    APIGW[Amazon API Gateway\nHTTP API]
     ECR[Amazon ECR\nImagens - repo APP]
 
     subgraph VPC[VPC - este repo]
@@ -31,17 +32,22 @@ flowchart TD
       end
 
       subgraph PrivateSubnets[Sub-redes privadas - duas AZs]
+        VPCLink[VPC Link]
+        NLB[NLB interno]
         RDS[Amazon RDS PostgreSQL\nrepo DB]
       end
     end
   end
 
-  LoadBalancer --> EKS
+  Internet -->|HTTPS| APIGW
+  APIGW --> VPCLink
+  VPCLink --> NLB
+  NLB -->|NodePorts 30080-30084| EKS
   EKS -->|Le imagens| ECR
   EKS -->|PostgreSQL 5432| RDS
 ```
 
-As subnets privadas não têm NAT nem rota para a Internet. Elas existem para o banco do repositório DB. Os detalhes da arquitetura estão em [infra/ESTRUTURA.md](infra/ESTRUTURA.md), e o passo a passo local em [infra/README.md](infra/README.md). A organização dos manifests está em [k8s/README.md](k8s/README.md).
+As subnets privadas não têm NAT nem rota para a Internet. Elas hospedam o banco do repositório DB e, deste repositório, o VPC Link e o NLB interno do API Gateway. Os detalhes da arquitetura estão em [infra/ESTRUTURA.md](infra/ESTRUTURA.md), e o passo a passo local em [infra/README.md](infra/README.md). A organização dos manifests está em [k8s/README.md](k8s/README.md).
 
 ## 2. Dependências entre repositórios
 
@@ -86,8 +92,11 @@ O nome do cluster (`techchallenge-oficina-eks`) é usado só por este repositór
    - IAM:
      - `iam:CreateRole`, `iam:DeleteRole`, `iam:GetRole`, `iam:TagRole`, `iam:PassRole`.
      - `iam:AttachRolePolicy`, `iam:DetachRolePolicy`, `iam:ListAttachedRolePolicies`, `iam:ListRolePolicies`, `iam:ListInstanceProfilesForRole`.
-     - `iam:GetUser` (para `cluster_admin`) e `iam:CreateServiceLinkedRole` (EKS, node group e ELB).
-   - `rds:DescribeDBInstances` (K8s Apply e Destroy) e `elasticloadbalancing:Describe*`.
+     - `iam:GetUser` (para `cluster_admin`) e `iam:CreateServiceLinkedRole` (EKS, node group, ELB e API Gateway: `ops.apigateway.amazonaws.com`, criada no primeiro VPC Link).
+   - API Gateway: `apigateway:*` em `/apis*`, `/vpclinks*` e `/tags*` (HTTP API, rotas, integrações, stage e VPC Link).
+   - Elastic Load Balancing: criar, alterar e apagar o NLB, os target groups e os listeners, com `elasticloadbalancing:AddTags` e `elasticloadbalancing:Describe*`.
+   - Auto Scaling: `autoscaling:AttachLoadBalancerTargetGroups`, `autoscaling:DetachLoadBalancerTargetGroups` e `autoscaling:Describe*` (anexa o ASG do node group aos target groups).
+   - `rds:DescribeDBInstances` (K8s Apply e Destroy).
    - S3: `s3:GetObject`, `s3:PutObject` e `s3:DeleteObject` em `techchallenge-oficina/k8s-*.tfstate*`, mais `s3:ListBucket` no bucket.
 3. **Usuário IAM `cluster_admin`**: acesso alternativo ao cluster. É **obrigatório**: a foundation consulta esse usuário (`data "aws_iam_user"`), e o plan falha se ele não existir.
 4. **Secrets e Variables do GitHub**: veja a seção 4.
@@ -121,11 +130,11 @@ Os segredos são passados ao `k8s/.env` por variáveis de ambiente, sem interpol
 | **Deploy** | Pull Request para `main` | `validate` offline de foundation, addons e manifests (checks obrigatórios) → `plan` informativo de foundation e addons |
 | **Deploy** | Push na `main` | Mudança em `infra/**`, `deploy.yml` ou `_terraform.yml`: apply foundation → addons. Mudança em `k8s/**` ou `_k8s-apply.yml`: apply dos manifests com rollout restart |
 | **K8s Apply** | Manual (input `restart-pods`, padrão `true`), ou disparado pelo repo APP depois de publicar imagens | Descobre o RDS, gera o Secret, `kubectl apply -k k8s` e, opcionalmente, `rollout restart` |
-| **Destroy** | Manual, `confirm = destroy` + aprovação | Confere que o RDS e o SG dele já foram destruídos → remove o Service LoadBalancer do ingress (e espera o ELB sair) → destroy dos addons → destroy da foundation |
+| **Destroy** | Manual, `confirm = destroy` + aprovação | Confere que o RDS e o SG dele já foram destruídos → destroy dos addons → destroy da foundation (inclui API Gateway, VPC Link e NLB) |
 
 Apply, K8s Apply e Destroy só rodam a partir da `main`. Disparados em outra branch, **falham** com erro. Os detalhes estão em [.github/workflows/README.md](.github/workflows/README.md).
 
-**Atenção ao custo: um merge em `infra/**` com o ambiente desligado recria o ambiente.** A foundation não depende de nada existente, então o push na `main` aplica a foundation e os addons do zero, subindo VPC, EKS, nodes e Load Balancer. Isso inclui o **primeiro push** deste código. Como na fase 2, é o comportamento esperado; tenha isso em mente:
+**Atenção ao custo: um merge em `infra/**` com o ambiente desligado recria o ambiente.** A foundation não depende de nada existente, então o push na `main` aplica a foundation e os addons do zero, subindo VPC, EKS, nodes, NLB e API Gateway. Isso inclui o **primeiro push** deste código. Como na fase 2, é o comportamento esperado; tenha isso em mente:
 - **Com a infra destruída:**
   - O `plan-foundation` do PR mostra a criação completa.
   - Só o `plan-addons` falha, porque não há cluster.
@@ -158,7 +167,7 @@ O `k8s/.env` e os `terraform.tfvars` são ignorados pelo Git. Os `.terraform.loc
 
 ## 7. Destruição e custos
 
-EKS, nodes, Load Balancer e o tráfego geram custo enquanto existem.
+EKS, nodes, NLB, API Gateway (cobrado por requisição) e o tráfego geram custo enquanto existem.
 
 **Atenção à versão do EKS:** `eks_version` é `1.32`, copiado da fase 2 ([variables.tf](infra/foundation/variables.tf)). Se essa versão já estiver fora do suporte padrão da AWS, o control plane é cobrado na tarifa de *extended support*, várias vezes a tarifa padrão. Antes do primeiro Bootstrap, confira o calendário de versões do EKS e, se preciso, suba `eks_version`.
 
@@ -175,6 +184,6 @@ A ordem interna é addons → foundation. O bucket S3 do state não é removido.
 - **K8s Apply falha em "Descobrir endpoint do RDS"**: o RDS do repo DB não existe ou ainda está sendo criado. Rode o Bootstrap do repo DB e aguarde.
 - **Pods em `ImagePullBackOff`**: as imagens ainda não foram publicadas no ECR pelo repo APP.
 - **Destroy falha em "Verificar se o RDS do repo DB já foi destruído"**: rode o Destroy do repo DB antes. O erro também aparece se a variable `RDS_INSTANCE_IDENTIFIER` não estiver configurada.
-- **Destroy da foundation travado em `DependencyViolation` na VPC/subnets**: procure um Load Balancer ou ENI órfão na VPC. Por exemplo, um ELB do ingress que não foi removido, porque o cluster já não existia no job `delete-load-balancer`. Apague-o e rode o Destroy de novo.
-- **Destroy aparece como "cancelled"**: no padrão do GitHub (`queue: single`), um run mais novo no mesmo grupo de concorrência substituiu o que estava pendente. Rode o Destroy de novo, sem Deploy, Bootstrap ou K8s Apply em andamento. Se o `delete-load-balancer` já tiver rodado, o ingress fica sem Load Balancer. Se você desistir do Destroy, o Bootstrap **não** traz o LB de volta, porque o Helm não vê diferença. Nesse caso, recrie o release em `infra/addons` com `terraform apply -replace=helm_release.ingress_nginx`.
+- **Destroy da foundation travado em `DependencyViolation` na VPC/subnets**: procure uma ENI órfã na VPC (por exemplo, do VPC Link do API Gateway). Espere alguns minutos ou apague-a e rode o Destroy de novo.
+- **Destroy aparece como "cancelled"**: no padrão do GitHub (`queue: single`), um run mais novo no mesmo grupo de concorrência substituiu o que estava pendente. Rode o Destroy de novo, sem Deploy, Bootstrap ou K8s Apply em andamento.
 - **`Error acquiring the state lock`**: há outro apply ou destroy rodando no mesmo root. Se o lock ficou preso depois de um run cancelado, rode `terraform force-unlock <LOCK_ID>` na pasta do root, ou apague o objeto `.tflock` correspondente no bucket.

@@ -2,8 +2,8 @@
 
 Tutorial resumido para criar a infraestrutura deste repositório a partir da sua máquina. Existem duas configurações Terraform independentes:
 
-- `foundation/`: VPC, subnets públicas e privadas, security groups, IAM, EKS, node group e access entries.
-- `addons/`: `ingress-nginx` e Metrics Server via Helm.
+- `foundation/`: VPC, subnets públicas e privadas, security groups, IAM, EKS, node group, access entries e o acesso externo às APIs (API Gateway, VPC Link e NLB interno).
+- `addons/`: Metrics Server via Helm.
 
 O state usa o bucket S3 externo `terraform-state-soat16`, com lock nativo (`use_lockfile`) e estas chaves:
 
@@ -55,6 +55,8 @@ Pop-Location
 
 Revise o `plan` antes de confirmar o `apply`.
 
+Ao final, o output `api_gateway_endpoint` mostra a URL pública das APIs (`https://<id>.execute-api.us-east-1.amazonaws.com`). Para consultá-la depois, rode `terraform output -raw api_gateway_endpoint` em `foundation/`. As rotas estão em [k8s/README.md](../k8s/README.md#8-acesso-externo-api-gateway).
+
 A foundation também cria o que o repositório DB usa: a tag `Project = techchallenge-oficina` na VPC, as subnets privadas `techchallenge-oficina-private-1` e `-2` e o SG `techchallenge-oficina-nodes-sg`. Não renomeie esses itens (contrato em [README.md](../README.md)).
 
 ## 4. Instale os addons
@@ -71,7 +73,7 @@ terraform apply -var-file="terraform.tfvars"
 Pop-Location
 ```
 
-Isso instala o `ingress-nginx` (chart 4.12.1) e o Metrics Server (chart 3.12.2). Os addons encontram o cluster pelo nome, sem ler o state da foundation, então o `plan` só funciona com o cluster já criado. O mesmo usuário/profile `terraform` é usado nos dois estados.
+Isso instala o Metrics Server (chart 3.12.2). Os addons encontram o cluster pelo nome, sem ler o state da foundation, então o `plan` só funciona com o cluster já criado. O mesmo usuário/profile `terraform` é usado nos dois estados.
 
 ## 5. Configure o kubectl
 
@@ -79,7 +81,6 @@ Isso instala o `ingress-nginx` (chart 4.12.1) e o Metrics Server (chart 3.12.2).
 aws eks update-kubeconfig --region us-east-1 --name techchallenge-oficina-eks
 kubectl get nodes
 kubectl get pods -A
-kubectl get svc ingress-nginx-controller -n ingress-nginx
 ```
 
 ## 6. Aplique os manifests
@@ -91,7 +92,7 @@ O caminho recomendado é o workflow **K8s Apply**, que descobre o endpoint do RD
 Valide:
 
 ```powershell
-kubectl get pods,svc,hpa,ingress -n oficina
+kubectl get pods,svc,hpa -n oficina
 kubectl top pods -n oficina
 ```
 
@@ -112,15 +113,12 @@ terraform validate
 Antes, destrua o LAMBDA e o repositório DB. O APP não tem recursos a destruir, porque o ECR é manual. O RDS usa as subnets privadas e referencia o SG dos nodes: com ele de pé, o destroy da foundation falha com `DependencyViolation`.
 
 Depois, para evitar custos:
-1. Remova o Service LoadBalancer do ingress e espere o ELB sair. Ele é criado pelo Kubernetes e não pelo Terraform, e se ficar para trás trava a VPC.
-2. Destrua os addons.
-3. Destrua a foundation.
+1. Destrua os addons.
+2. Destrua a foundation, que leva junto o API Gateway, o VPC Link e o NLB.
 
 Os comandos rodam a partir de `infra/`:
 
 ```powershell
-kubectl delete service ingress-nginx-controller -n ingress-nginx --ignore-not-found --wait=true --timeout=10m
-
 Push-Location addons
 terraform destroy -var-file="terraform.tfvars"
 Pop-Location

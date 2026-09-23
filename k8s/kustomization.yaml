@@ -24,7 +24,6 @@ resources:
   - features/status-api/deployment.yml
   - features/status-api/hpa.yml
   - features/status-api/service.yml
-  - infra/ingress.yml
 
 secretGenerator:
   - name: oficina-api-secrets

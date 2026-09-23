@@ -61,41 +61,8 @@ jobs:
     steps:
       - run: echo "Destroy da infra K8S aprovado"
 
-  # O Load Balancer do ingress-nginx é criado pelo Kubernetes, não pelo Terraform. Remover o Service e esperar
-  # o finalizer garante que o ELB saia antes do cluster, evitando ELB órfão (custo) e VPC travada no destroy
-  delete-load-balancer:
-    needs: gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - uses: azure/setup-kubectl@v5
-
-      - name: Remover o Service LoadBalancer do ingress-nginx
-        env:
-          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
-        run: |
-          if [ -z "$EKS_CLUSTER_NAME" ]; then
-            echo "::error::Variable EKS_CLUSTER_NAME não configurada."
-            exit 1
-          fi
-          if ! out=$(aws eks describe-cluster --name "$EKS_CLUSTER_NAME" 2>&1); then
-            if grep -q ResourceNotFoundException <<< "$out"; then
-              echo "Cluster $EKS_CLUSTER_NAME não encontrado: nada a remover."
-              exit 0
-            fi
-            echo "::error::$out"
-            exit 1
-          fi
-          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
-          kubectl delete service ingress-nginx-controller -n ingress-nginx --ignore-not-found --wait=true --timeout=10m
-
   terraform-destroy-addons:
-    needs: delete-load-balancer
+    needs: gate
     uses: ./.github/workflows/_terraform.yml
     with:
       working-directory: infra/addons

@@ -2,9 +2,9 @@
 
 ## Objetivo
 
-Provisionar a rede e o Amazon EKS onde rodam as cinco APIs e expô-las por HTTP usando o hostname DNS público gerado pela AWS para o Load Balancer do `ingress-nginx`.
+Provisionar a rede e o Amazon EKS onde rodam as cinco APIs e expô-las na Internet por HTTPS, pelo endpoint padrão (`execute-api`) de um Amazon API Gateway.
 
-O Terraform gerencia a infraestrutura AWS (state `foundation`) e, num state separado (`addons`), instala `ingress-nginx` e Metrics Server via Helm. Os manifests das APIs ([k8s/](../k8s/kustomization.yaml)) são aplicados pelo GitHub Actions com `kubectl apply -k k8s` (seção [Aplicação dos manifests](#aplicação-dos-manifests)).
+O Terraform gerencia a infraestrutura AWS, inclusive o API Gateway (state `foundation`), e, num state separado (`addons`), instala o Metrics Server via Helm. Os manifests das APIs ([k8s/](../k8s/kustomization.yaml)) são aplicados pelo GitHub Actions com `kubectl apply -k k8s` (seção [Aplicação dos manifests](#aplicação-dos-manifests)).
 
 O banco de dados (RDS PostgreSQL) não é criado aqui: ele fica no [repositório DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658). O build das imagens e o push para o ECR ficam no [repositório APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658).
 
@@ -16,8 +16,9 @@ O banco de dados (RDS PostgreSQL) não é criado aqui: ele fica no [repositório
   - `techchallenge-oficina/k8s-foundation.tfstate`.
   - `techchallenge-oficina/k8s-addons.tfstate`.
 - Os arquivos `.terraform.lock.hcl` são versionados: provider AWS `6.66.0` nas duas pastas e Helm `2.17.0` no addons.
-- Sem Route 53, domínio próprio, certificado ou HTTPS nesta etapa.
-- O Ingress das APIs não possui campo `host`.
+- Sem Route 53, domínio próprio ou certificado próprio: o acesso usa o endpoint padrão do API Gateway (`https://<id>.execute-api.us-east-1.amazonaws.com`), que só atende HTTPS.
+- O API Gateway é uma HTTP API sem authorizer: só repassa as requisições, e o JWT (Auth0) continua sendo validado pelas próprias APIs.
+- Não há Ingress nem Ingress Controller. O API Gateway chega aos pods por VPC Link → NLB interno → NodePort, tudo criado pelo Terraform da foundation. Nenhum Load Balancer é criado pelo Kubernetes.
 - Os repositórios ECR e as imagens pertencem ao repo APP. Aqui, os nodes só leem do ECR pela role IAM com `AmazonEC2ContainerRegistryReadOnly`; não existe Secret Kubernetes para pull.
 - `apply` e `destroy` rodam pelo GitHub Actions e só a partir da `main` (detalhes em [.github/workflows/README.md](../.github/workflows/README.md)).
 - O ambiente é acadêmico e descartável; todos os recursos podem ser destruídos ao final.
@@ -27,7 +28,7 @@ O banco de dados (RDS PostgreSQL) não é criado aqui: ele fica no [repositório
 Antes do primeiro Bootstrap, devem existir:
 
 1. Bucket S3 `terraform-state-soat16`, em `us-east-1`, com versionamento, criptografia, bloqueio público e leitura/escrita nas keys `techchallenge-oficina/k8s-*.tfstate*` para o usuário `terraform`.
-2. Usuário IAM `terraform`, cujas access keys vão para os secrets do GitHub. Precisa de permissões para criar a foundation (VPC, IAM, EKS), consultar o usuário `cluster_admin`, criar Access Entries no EKS e, no K8s Apply e no Destroy, executar `eks:DescribeCluster` e `rds:DescribeDBInstances`.
+2. Usuário IAM `terraform`, cujas access keys vão para os secrets do GitHub. Precisa de permissões para criar a foundation (VPC, IAM, EKS, API Gateway, NLB e o attachment dos target groups ao Auto Scaling Group; lista no [README principal](../README.md#3-pré-requisitos-manuais-uma-vez)), consultar o usuário `cluster_admin`, criar Access Entries no EKS e, no K8s Apply e no Destroy, executar `eks:DescribeCluster` e `rds:DescribeDBInstances`.
 3. Usuário IAM `cluster_admin`. **Obrigatório**: a foundation o consulta por data source, e o `plan` falha se ele não existir.
 4. Secrets, Variables e o Environment `destroy` no GitHub, descritos em [.github/workflows/README.md](../.github/workflows/README.md).
 
@@ -38,24 +39,27 @@ O Terraform não cria esses usuários nem o bucket. Access keys, secrets, `terra
 ```text
 Internet
    |
-   | HTTP :80
+   | HTTPS
    v
-Load Balancer público do Service ingress-nginx
+API Gateway (HTTP API techchallenge-oficina-api, stage $default)
+   |  rota ANY /<api>/{proxy+}; o prefixo sai do path (/monolith/api/x -> /api/x)
+   v
+VPC Link (subnets privadas)
    |
    v
-Ingress Controller no EKS (Ingress oficina-apis, namespace oficina)
+NLB interno (subnets privadas): um listener e um target group por API
    |
-   +--> /monolith  --> monolith-api:80 --> container:8080
-   +--> /approval  --> approval-api:80 --> container:8080
-   +--> /createos  --> createos-api:80 --> container:8080
-   +--> /getos     --> getos-api:80    --> container:8080
-   +--> /status    --> status-api:80   --> container:8080
+   +--> /monolith  --> :30080 --> NodePort 30080 --> monolith-api:80 --> container:8080
+   +--> /approval  --> :30081 --> NodePort 30081 --> approval-api:80 --> container:8080
+   +--> /createos  --> :30082 --> NodePort 30082 --> createos-api:80 --> container:8080
+   +--> /getos     --> :30083 --> NodePort 30083 --> getos-api:80    --> container:8080
+   +--> /status    --> :30084 --> NodePort 30084 --> status-api:80   --> container:8080
 
 VPC 10.0.0.0/16 (tag Project = techchallenge-oficina)
   Subnets públicas techchallenge-oficina-public-{1,2}   (10.0.0.0/20, 10.0.16.0/20)
-    -> EKS, nodes e Load Balancer; rota 0.0.0.0/0 pelo Internet Gateway
+    -> EKS e nodes; rota 0.0.0.0/0 pelo Internet Gateway
   Subnets privadas techchallenge-oficina-private-{1,2}  (10.0.128.0/20, 10.0.144.0/20)
-    -> reservadas para o RDS do repo DB; sem NAT e sem rota para a Internet
+    -> RDS do repo DB, VPC Link e NLB interno; sem NAT e sem rota para a Internet
 ```
 
 Não há NAT Gateway. Os nodes usam saída pelas subnets públicas para acessar ECR e demais serviços AWS.
@@ -65,16 +69,16 @@ Não há NAT Gateway. Os nodes usam saída pelas subnets públicas para acessar 
 | Security Group | Regras |
 |---|---|
 | `techchallenge-oficina-cluster-sg` | SG adicional do control plane; sem entrada, saída liberada |
-| `techchallenge-oficina-nodes-sg` | Entrada total entre os próprios nodes e a partir do SG do cluster; saída liberada |
+| `techchallenge-oficina-nodes-sg` | Entrada total entre os próprios nodes e a partir do SG do cluster; entrada TCP `30000-32767` (NodePorts) só a partir da VPC (`10.0.0.0/16`), para o NLB; saída liberada |
+| `techchallenge-oficina-vpc-link-sg` | SG do VPC Link do API Gateway; sem entrada, saída liberada |
 
 O launch template anexa aos nodes o SG do cluster, o `techchallenge-oficina-nodes-sg` e o SG gerenciado pelo EKS. O SG do banco não é criado aqui. O repo DB cria o próprio SG (`techchallenge-oficina-rds-sg`), com entrada `5432` a partir do `techchallenge-oficina-nodes-sg`, e o repo LAMBDA adiciona a própria regra nesse SG.
 
 As regras garantem:
 
-- Nenhuma entrada pública nas portas `8080` ou dos Services.
+- Nenhuma entrada pública nas portas `8080` ou dos Services: os NodePorts só aceitam tráfego de dentro da VPC. O NLB não tem SG e preserva o IP de origem, que é o do VPC Link ou o do health check do NLB, ambos dentro da VPC.
 - Nenhum SSH aberto para a Internet.
-- Nenhum NodePort configurado manualmente pelo Terraform.
-- O Service `LoadBalancer` e a integração Kubernetes/AWS gerenciam NodePorts e regras do Load Balancer.
+- A única entrada pública é o API Gateway; o NLB é interno.
 
 ## Foundation
 
@@ -83,8 +87,8 @@ Localização: `infra/foundation/`
 Responsabilidades:
 
 - VPC `10.0.0.0/16` com DNS habilitado.
-- Duas subnets públicas para EKS, nodes e Load Balancer, com a tag `kubernetes.io/role/elb`.
-- Duas subnets privadas, em duas AZs, para o DB subnet group do RDS do repo DB. A route table privada não tem rotas além da local.
+- Duas subnets públicas para EKS e nodes.
+- Duas subnets privadas, em duas AZs, para o DB subnet group do RDS do repo DB e para o VPC Link e o NLB interno. A route table privada não tem rotas além da local.
 - Internet Gateway e rotas públicas.
 - Security Groups do cluster e dos nodes.
 - IAM roles do EKS e dos nodes, com `AmazonEC2ContainerRegistryReadOnly` na role dos nodes.
@@ -97,10 +101,16 @@ Responsabilidades:
   - Disco EBS `gp3` de `30 GiB`, criptografado, e IMDSv2 obrigatório no launch template.
 - Access Entry com `AmazonEKSClusterAdminPolicy` para o usuário `cluster_admin` (obrigatório).
 - Access Entry com `AmazonEKSClusterAdminPolicy` para quem executa o Terraform (`aws_caller_identity`).
+- Acesso externo às APIs ([api-gateway.tf](foundation/api-gateway.tf) e [nlb.tf](foundation/nlb.tf)):
+  - API Gateway HTTP API `techchallenge-oficina-api`, com stage `$default` (auto deploy) e uma rota `ANY /<api>/{proxy+}` por API. A integração remove o prefixo do path (`overwrite:path`), como fazia o `rewrite-target` do antigo Ingress.
+  - VPC Link `techchallenge-oficina-vpc-link` nas subnets privadas.
+  - NLB interno `techchallenge-oficina-nlb`, com cross-zone. Tem um listener TCP e um target group por API, na porta do NodePort. Os target groups são do tipo `instance`, com health check HTTP em `/health`.
+  - Os target groups são anexados ao Auto Scaling Group do node group (`aws_autoscaling_attachment`), então nodes novos entram sozinhos.
+  - As portas ficam em `local.api_node_ports` ([locals.tf](foundation/locals.tf)) e precisam ser iguais ao `nodePort` dos Services em `k8s/features/*/service.yml`.
 
 O usuário `terraform` é o acesso principal: executa foundation, addons e `kubectl`, no CI e localmente. Rode sempre com esse mesmo usuário. Com outra identidade, a Access Entry do executor anterior é substituída, e o CI pode perder o acesso ao cluster.
 
-Outputs: `cluster_name`, `cluster_endpoint` e `cluster_region`.
+Outputs: `cluster_name`, `cluster_endpoint`, `cluster_region` e `api_gateway_endpoint` (URL pública das APIs).
 
 ## Addons
 
@@ -110,15 +120,7 @@ Responsabilidades:
 
 - Usar as mesmas credenciais do usuário `terraform`.
 - Consultar o cluster pelo nome, sem ler o state remoto da foundation. Por isso, o `plan` do addons exige o cluster EKS de pé.
-- Instalar `ingress-nginx` (chart `4.12.1`) via Helm com os valores padrão.
 - Instalar Metrics Server (chart `3.12.2`) via Helm, usado pelos HPAs.
-
-O hostname do Load Balancer é consultado com:
-
-```powershell
-kubectl get svc ingress-nginx-controller -n ingress-nginx
-kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"
-```
 
 ## Contrato com o repo DB
 
@@ -147,7 +149,7 @@ Ordem entre repositórios no deploy:
 
 O K8s Apply (disparado pelo repo APP ou manual, `restart-pods` com padrão `true`) descobre o endpoint do RDS, monta o `k8s/.env` com a connection string e o `ResendSettings__ApiKey` a partir dos secrets do GitHub, roda `kubectl apply -k k8s` e, se pedido, faz o `rollout restart` das cinco APIs. O restart é necessário quando o Secret muda (`disableNameSuffixHash` mantém o mesmo nome) ou quando há imagem nova, já que os Deployments usam a tag `latest` com `imagePullPolicy: Always`. O Deploy também aplica os manifests, com restart, em push na `main` que altere `k8s/**`.
 
-O arquivo [k8s/infra/ingress.yml](../k8s/infra/ingress.yml) contém somente o recurso `Ingress` das APIs.
+Os Services das APIs são `NodePort`, com portas fixas (30080–30084) que o NLB da foundation usa como destino. Não há manifest de Ingress.
 
 ## Validação
 
@@ -172,13 +174,12 @@ O CI não usa `terraform.tfvars` e aplica os defaults de `variables.tf`. Se cria
 
 ## Destruição e custos
 
-EKS (control plane cobrado por hora), os dois nodes com seus discos EBS e o Load Balancer do `ingress-nginx` geram custos enquanto existem.
+EKS (control plane cobrado por hora), os dois nodes com seus discos EBS, o NLB interno (cobrado por hora) e o API Gateway (cobrado por requisição) geram custos enquanto existem.
 
 Ordem entre repositórios: **LAMBDA** → **DB** → **K8S**. O APP não tem recursos a destruir, porque o ECR é manual. O RDS usa as subnets privadas e o SG dele referencia o SG dos nodes; se ainda existir, o destroy da VPC falha com `DependencyViolation`.
 
 Neste repositório, rode o workflow [Destroy](../.github/workflows/destroy.yml) com `confirm = destroy` e aprove no Environment `destroy`. A sequência é:
 1. `db-check`: falha se o RDS `techchallenge-oficina-postgres` ou o SG `techchallenge-oficina-rds-sg` ainda existirem.
 2. `gate`: aprovação manual.
-3. `delete-load-balancer`: remove o Service `ingress-nginx-controller` e espera o finalizer. O ELB é criado pelo Kubernetes, e não pelo Terraform. Esperar que ele saia antes do cluster evita ELB órfão e VPC travada.
-4. Addons.
-5. Foundation. O bucket S3 do state e o ECR do repo APP ficam fora do `destroy`.
+3. Addons.
+4. Foundation, que leva junto o API Gateway, o VPC Link e o NLB. Nenhum Load Balancer é criado pelo Kubernetes, então não há o que limpar antes. O bucket S3 do state e o ECR do repo APP ficam fora do `destroy`.

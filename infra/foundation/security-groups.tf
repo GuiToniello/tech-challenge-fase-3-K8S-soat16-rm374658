@@ -32,6 +32,27 @@ resource "aws_security_group" "nodes" {
     security_groups = [aws_security_group.cluster.id]
   }
 
+  ingress {
+    description = "NodePorts from the VPC (NLB)"
+    from_port   = 30000
+    to_port     = 32767
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "vpc_link" {
+  name        = "${var.project_name}-vpc-link-sg"
+  description = "API Gateway VPC Link to the internal NLB"
+  vpc_id      = aws_vpc.this.id
+
   egress {
     from_port   = 0
     to_port     = 0

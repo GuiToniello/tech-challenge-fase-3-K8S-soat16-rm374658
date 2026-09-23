@@ -9,3 +9,7 @@ output "cluster_endpoint" {
 output "cluster_region" {
   value = var.aws_region
 }
+
+output "api_gateway_endpoint" {
+  value = aws_apigatewayv2_api.this.api_endpoint
+}

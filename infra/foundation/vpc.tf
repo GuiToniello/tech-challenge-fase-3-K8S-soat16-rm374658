@@ -13,8 +13,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name                     = "${var.project_name}-public-${count.index + 1}"
-    "kubernetes.io/role/elb" = "1"
+    Name = "${var.project_name}-public-${count.index + 1}"
   }
 }
 
