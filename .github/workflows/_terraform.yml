@@ -66,4 +66,4 @@ jobs:
 
       - name: Terraform ${{ inputs.command }}
         if: inputs.command == 'apply' || inputs.command == 'destroy'
-        run: terraform ${{ inputs.command }} -auto-approve -input=false -lock-timeout=15m
+        run: terraform ${{ inputs.command }} -auto-approve -input=false
