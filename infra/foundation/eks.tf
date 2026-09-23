@@ -31,6 +31,8 @@ resource "aws_eks_access_policy_association" "cluster_admin" {
   access_scope {
     type = "cluster"
   }
+
+  depends_on = [aws_eks_access_entry.cluster_admin]
 }
 
 resource "aws_eks_access_entry" "terraform_user" {
@@ -47,4 +49,6 @@ resource "aws_eks_access_policy_association" "terraform_user" {
   access_scope {
     type = "cluster"
   }
+
+  depends_on = [aws_eks_access_entry.terraform_user]
 }
