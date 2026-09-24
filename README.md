@@ -13,7 +13,7 @@ Tudo fica na AWS, região `us-east-1`, em duas configurações Terraform indepen
 
 | Configuração | State | Recursos |
 |---|---|---|
-| [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.32), node group `t3.small` (2/2/2), access entries e o acesso externo: API Gateway (HTTP API), VPC Link e NLB interno |
+| [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.36), node group `t3.small` (2/2/2), access entries e o acesso externo: API Gateway (HTTP API), VPC Link e NLB interno |
 | [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | Metrics Server, via Helm |
 
 Os manifests em [k8s/](k8s) criam o namespace `oficina` e, para cada uma das cinco APIs (monolith, approval, createos, getos, status), um ConfigMap, um Deployment, um Service `NodePort` e um HPA. Também criam o Secret `oficina-api-secrets`.
@@ -169,7 +169,7 @@ O `k8s/.env` e os `terraform.tfvars` são ignorados pelo Git. Os `.terraform.loc
 
 EKS, nodes, NLB, API Gateway (cobrado por requisição) e o tráfego geram custo enquanto existem.
 
-**Atenção à versão do EKS:** `eks_version` é `1.32`, copiado da fase 2 ([variables.tf](infra/foundation/variables.tf)). Se essa versão já estiver fora do suporte padrão da AWS, o control plane é cobrado na tarifa de *extended support*, várias vezes a tarifa padrão. Antes do primeiro Bootstrap, confira o calendário de versões do EKS e, se preciso, suba `eks_version`.
+**Atenção à versão do EKS:** `eks_version` é `1.36` ([variables.tf](infra/foundation/variables.tf)), no suporte padrão da AWS até 02/08/2027. Fora do suporte padrão, o control plane é cobrado na tarifa de *extended support*, várias vezes a tarifa padrão. O EKS só atualiza um cluster existente uma minor por vez: para trocar `eks_version`, destrua o ambiente antes do merge e deixe o Deploy recriá-lo na nova versão.
 
 Para remover tudo:
 1. Destrua o LAMBDA e o **DB**. O APP não tem recursos a destruir, porque o ECR é manual.

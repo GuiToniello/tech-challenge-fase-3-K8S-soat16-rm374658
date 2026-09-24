@@ -92,7 +92,7 @@ Responsabilidades:
 - Internet Gateway e rotas públicas.
 - Security Groups do cluster e dos nodes.
 - IAM roles do EKS e dos nodes, com `AmazonEC2ContainerRegistryReadOnly` na role dos nodes.
-- EKS `techchallenge-oficina-eks`, versão `1.32`, `authentication_mode = "API"`, endpoint público e privado.
+- EKS `techchallenge-oficina-eks`, versão `1.36`, `authentication_mode = "API"`, endpoint público e privado.
 - Managed node group:
   - Instância `t3.small`, elegível ao Free Tier nesta conta.
   - `min_size = 2`.
