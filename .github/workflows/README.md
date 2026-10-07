@@ -163,7 +163,7 @@ Mudanças no spec do Deployment (imagem, recursos, probes) já fazem rollout soz
 | Job | Quando roda | O que faz |
 |---|---|---|
 | `reject` | `confirm` ≠ `destroy` ou branch ≠ `main` | **Falha** com erro, em vez de terminar verde sem ter destruído nada |
-| `db-check` | `confirm` = `destroy` na `main` | **Falha** em três casos: a var `RDS_INSTANCE_IDENTIFIER` está vazia, o RDS ainda existe, ou o SG `techchallenge-oficina-rds-sg` ainda existe. Assim o destroy não remove os addons para depois travar no `DependencyViolation` da rede |
+| `db-check` | `confirm` = `destroy` na `main` | **Falha** em quatro casos: o SG `techchallenge-oficina-lambda-sg` (Lambda do repo LAMBDA na VPC) ainda existe, a var `RDS_INSTANCE_IDENTIFIER` está vazia, o RDS ainda existe, ou o SG `techchallenge-oficina-rds-sg` ainda existe. Assim o destroy não remove os addons para depois travar no `DependencyViolation` da rede |
 | `gate` | depois do `db-check` | `environment: destroy`: aprovação manual. É um job à parte porque um job com `uses:` não aceita `environment` |
 | `terraform-destroy-addons` → `terraform-destroy-foundation` | depois do `gate` | `_terraform.yml` destroy. A foundation leva junto o API Gateway, o VPC Link e o NLB; como nenhum Load Balancer é criado pelo Kubernetes, não há o que limpar antes |
 

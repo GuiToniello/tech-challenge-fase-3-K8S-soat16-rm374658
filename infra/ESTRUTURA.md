@@ -17,7 +17,7 @@ O banco de dados (RDS PostgreSQL) não é criado aqui: ele fica no [repositório
   - `techchallenge-oficina/k8s-addons.tfstate`.
 - Os arquivos `.terraform.lock.hcl` são versionados: provider AWS `6.66.0` nas duas pastas e Helm `2.17.0` no addons.
 - Sem Route 53, domínio próprio ou certificado próprio: o acesso usa o endpoint padrão do API Gateway (`https://<id>.execute-api.us-east-1.amazonaws.com`), que só atende HTTPS.
-- O API Gateway é uma HTTP API sem authorizer: só repassa as requisições, e o JWT (Auth0) continua sendo validado pelas próprias APIs.
+- O API Gateway é uma HTTP API com um Lambda authorizer (repo LAMBDA) nas rotas das APIs. Ele exige um JWT válido do Auth0 com a claim `cpf`; o cadastro de cliente (`POST /monolith/api/clientes`) aceita JWT sem `cpf`. As APIs continuam validando o JWT. Ficam públicas, sem authorizer, as rotas `GET /<api>/health` e `POST /auth/token` (Lambda que gera o JWT com `cpf`).
 - Não há Ingress nem Ingress Controller. O API Gateway chega aos pods por VPC Link → NLB interno → NodePort, tudo criado pelo Terraform da foundation. Nenhum Load Balancer é criado pelo Kubernetes.
 - Os repositórios ECR e as imagens pertencem ao repo APP. Aqui, os nodes só leem do ECR pela role IAM com `AmazonEC2ContainerRegistryReadOnly`; não existe Secret Kubernetes para pull.
 - `apply` e `destroy` rodam pelo GitHub Actions e só a partir da `main` (detalhes em [.github/workflows/README.md](../.github/workflows/README.md)).
@@ -42,7 +42,10 @@ Internet
    | HTTPS
    v
 API Gateway (HTTP API techchallenge-oficina-api, stage $default)
-   |  rota ANY /<api>/{proxy+}; o prefixo sai do path (/monolith/api/x -> /api/x)
+   |  POST /auth/token (público) ------------------> Lambda techchallenge-oficina-issue-token (repo LAMBDA)
+   |  GET /<api>/health (público)
+   |  ANY /<api>/{proxy+} --> Lambda authorizer techchallenge-oficina-authorizer (repo LAMBDA)
+   |  o prefixo sai do path (/monolith/api/x -> /api/x)
    v
 VPC Link (subnets privadas)
    |
@@ -103,6 +106,9 @@ Responsabilidades:
 - Access Entry com `AmazonEKSClusterAdminPolicy` para quem executa o Terraform (`aws_caller_identity`).
 - Acesso externo às APIs ([api-gateway.tf](foundation/api-gateway.tf) e [nlb.tf](foundation/nlb.tf)):
   - API Gateway HTTP API `techchallenge-oficina-api`, com stage `$default` (auto deploy) e uma rota `ANY /<api>/{proxy+}` por API. A integração remove o prefixo do path (`overwrite:path`), como fazia o `rewrite-target` do antigo Ingress.
+  - Lambda authorizer (`REQUEST`, payload `2.0`, respostas simples, sem cache) nas rotas `ANY /<api>/{proxy+}`. Sem header `Authorization`, o gateway responde 401; token negado pelo authorizer responde 403.
+  - Rotas públicas: `GET /<api>/health`, com integração própria que reescreve o path para `/health`, e `POST /auth/token`, integrada (`AWS_PROXY`) à Lambda de geração do JWT.
+  - As Lambdas são referenciadas pelo nome fixo (seção [Contrato com o repo LAMBDA](#contrato-com-o-repo-lambda)), então o apply não depende delas já existirem. Até o repo LAMBDA publicá-las, as rotas das APIs e o `/auth/token` respondem 500.
   - VPC Link `techchallenge-oficina-vpc-link` nas subnets privadas.
   - NLB interno `techchallenge-oficina-nlb`, com cross-zone. Tem um listener TCP e um target group por API, na porta do NodePort. Os target groups são do tipo `instance`, com health check HTTP em `/health`.
   - Os target groups são anexados ao Auto Scaling Group do node group (`aws_autoscaling_attachment`), então nodes novos entram sozinhos.
@@ -135,6 +141,18 @@ O [repo DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374
 Alterar `project_name` ou o nome/descrição do SG dos nodes recria esses recursos e quebra o repo DB. No sentido inverso, este repositório consome do DB:
 - o identifier do RDS `techchallenge-oficina-postgres`, usado pelo K8s Apply para descobrir o endpoint e pelo Destroy para conferir que o RDS já foi removido;
 - o nome do SG `techchallenge-oficina-rds-sg`, que o Destroy também confere antes de começar.
+
+## Contrato com o repo LAMBDA
+
+O [repo LAMBDA](https://github.com/GuiToniello/tech-challenge-fase-3-LAMBDA-soat16-rm374658) publica as funções com AWS SAM e cria a permissão para o API Gateway invocá-las. Este repositório as referencia pelo nome, sem ler o state do LAMBDA ([locals.tf](foundation/locals.tf)):
+
+| O que | Valor | Uso aqui |
+|---|---|---|
+| Lambda authorizer | `techchallenge-oficina-authorizer` | `aws_apigatewayv2_authorizer.lambda`, aplicado às rotas das APIs |
+| Lambda de geração do JWT | `techchallenge-oficina-issue-token` | Rota `POST /auth/token` |
+| SG da Lambda na VPC | `techchallenge-oficina-lambda-sg` | O Destroy confere que ele já foi removido |
+
+A Lambda de busca de clientes do repo LAMBDA fica nas subnets privadas, com o próprio SG e uma regra no SG do RDS. Por isso o LAMBDA é destruído antes do DB e deste repositório.
 
 ## Aplicação dos manifests
 
@@ -179,7 +197,7 @@ EKS (control plane cobrado por hora), os dois nodes com seus discos EBS, o NLB i
 Ordem entre repositórios: **LAMBDA** → **DB** → **K8S**. O APP não tem recursos a destruir, porque o ECR é manual. O RDS usa as subnets privadas e o SG dele referencia o SG dos nodes; se ainda existir, o destroy da VPC falha com `DependencyViolation`.
 
 Neste repositório, rode o workflow [Destroy](../.github/workflows/destroy.yml) com `confirm = destroy` e aprove no Environment `destroy`. A sequência é:
-1. `db-check`: falha se o RDS `techchallenge-oficina-postgres` ou o SG `techchallenge-oficina-rds-sg` ainda existirem.
+1. `db-check`: falha se o SG `techchallenge-oficina-lambda-sg` (repo LAMBDA), o RDS `techchallenge-oficina-postgres` ou o SG `techchallenge-oficina-rds-sg` ainda existirem.
 2. `gate`: aprovação manual.
 3. Addons.
 4. Foundation, que leva junto o API Gateway, o VPC Link e o NLB. Nenhum Load Balancer é criado pelo Kubernetes, então não há o que limpar antes. O bucket S3 do state e o ECR do repo APP ficam fora do `destroy`.

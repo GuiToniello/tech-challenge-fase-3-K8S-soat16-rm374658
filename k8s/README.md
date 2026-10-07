@@ -147,7 +147,7 @@ Caminho de uma requisição: API Gateway → VPC Link → NLB interno → NodePo
 Configuração aplicada:
 1. Uma rota `ANY /<api>/{proxy+}` por API, no stage `$default`.
 2. A integração remove o prefixo antes de encaminhar ao backend (`overwrite:path`): `/monolith/api/clientes` chega à API como `/api/clientes`.
-3. O header `Authorization` é repassado, e o JWT continua sendo validado pelas APIs. O gateway não tem authorizer.
+3. Um Lambda authorizer (repo LAMBDA) protege as rotas das APIs: exige JWT válido do Auth0 com a claim `cpf`, exceto no cadastro de cliente (`POST /monolith/api/clientes`), que aceita JWT sem `cpf`. O header `Authorization` é repassado e as APIs validam o JWT de novo. São públicas as rotas `GET /<api>/health` e `POST /auth/token`, que gera o JWT com `cpf` (Lambda do repo LAMBDA).
 4. Cada API tem um listener e um target group no NLB, na mesma porta do NodePort. As portas ficam em `local.api_node_ports` ([infra/foundation/locals.tf](../infra/foundation/locals.tf)) e **precisam ser iguais** ao `nodePort` dos `service.yml`.
 
 | API | Rota | NodePort |
@@ -163,7 +163,10 @@ O endpoint só atende HTTPS. Um prefixo sozinho (`/monolith` ou `/monolith/`) re
 Checklist de confirmação, com o ambiente criado:
 1. URL da API: output `api_gateway_endpoint` da foundation, ou `aws apigatewayv2 get-apis --query "Items[?Name=='techchallenge-oficina-api'].ApiEndpoint" --output text`.
 2. Health de cada API: `curl.exe -i "<endpoint>/monolith/health"` (e `/approval`, `/createos`, `/getos` e `/status`) → 200.
-3. Autenticação passando pelo gateway: `curl.exe -i "<endpoint>/monolith/api/clientes"` → 401 sem token e 200 com o token do Auth0 (`Authorization: Bearer <token>`).
+3. Autenticação passando pelo gateway, em `curl.exe -i "<endpoint>/monolith/api/clientes"`:
+   - 401 sem token;
+   - 403 com o token direto do Auth0 (sem `cpf`);
+   - 200 com o JWT gerado pela Lambda (`POST <endpoint>/auth/token` com `{"email","senha","cpf"}`, detalhes no README do repo LAMBDA).
 4. Target groups `techchallenge-oficina-<api>` `healthy` no console do EC2 (Target Groups).
 
 ## 9. Validação

@@ -34,6 +34,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # SG da Lambda buscar-cliente (repo LAMBDA): ela fica nas subnets privadas e impediria o destroy da VPC.
+      # O SG só some depois que a AWS libera as interfaces de rede da Lambda
+      - name: Verificar se as Lambdas do repo LAMBDA já foram destruídas
+        run: |
+          sg=$(aws ec2 describe-security-groups --filters Name=group-name,Values=techchallenge-oficina-lambda-sg --query 'length(SecurityGroups)' --output text)
+          if [ "$sg" != "0" ]; then
+            echo "::error::O SG techchallenge-oficina-lambda-sg (repo LAMBDA) ainda existe. Rode o Destroy do repo LAMBDA antes."
+            exit 1
+          fi
+
       - name: Verificar se o RDS do repo DB já foi destruído
         env:
           RDS_INSTANCE_IDENTIFIER: ${{ vars.RDS_INSTANCE_IDENTIFIER }}

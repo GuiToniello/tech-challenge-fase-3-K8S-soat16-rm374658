@@ -16,4 +16,10 @@ locals {
     getos    = 30083
     status   = 30084
   }
+
+  # Lambdas do repo LAMBDA (AWS SAM), referenciadas pelo nome fixo: o apply nao depende delas
+  # ja existirem. A permissao para o API Gateway invoca-las fica nos templates SAM.
+  lambda_arn_prefix      = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}"
+  lambda_authorizer_arn  = "${local.lambda_arn_prefix}-authorizer"
+  lambda_issue_token_arn = "${local.lambda_arn_prefix}-issue-token"
 }

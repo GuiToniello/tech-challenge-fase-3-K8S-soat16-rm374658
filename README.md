@@ -13,7 +13,7 @@ Tudo fica na AWS, região `us-east-1`, em duas configurações Terraform indepen
 
 | Configuração | State | Recursos |
 |---|---|---|
-| [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.36), node group `t3.small` (2/2/2), access entries e o acesso externo: API Gateway (HTTP API), VPC Link e NLB interno |
+| [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.36), node group `t3.small` (2/2/2), access entries e o acesso externo: API Gateway (HTTP API, com o Lambda authorizer e a rota `/auth/token` do repo LAMBDA), VPC Link e NLB interno |
 | [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | Metrics Server, via Helm |
 
 Os manifests em [k8s/](k8s) criam o namespace `oficina` e, para cada uma das cinco APIs (monolith, approval, createos, getos, status), um ConfigMap, um Deployment, um Service `NodePort` e um HPA. Também criam o Secret `oficina-api-secrets`.
@@ -93,7 +93,7 @@ O nome do cluster (`techchallenge-oficina-eks`) é usado só por este repositór
      - `iam:CreateRole`, `iam:DeleteRole`, `iam:GetRole`, `iam:TagRole`, `iam:PassRole`.
      - `iam:AttachRolePolicy`, `iam:DetachRolePolicy`, `iam:ListAttachedRolePolicies`, `iam:ListRolePolicies`, `iam:ListInstanceProfilesForRole`.
      - `iam:GetUser` (para `cluster_admin`) e `iam:CreateServiceLinkedRole` (EKS, node group, ELB e API Gateway: `ops.apigateway.amazonaws.com`, criada no primeiro VPC Link).
-   - API Gateway: `apigateway:*` em `/apis*`, `/vpclinks*` e `/tags*` (HTTP API, rotas, integrações, stage e VPC Link).
+   - API Gateway: `apigateway:*` em `/apis*`, `/vpclinks*` e `/tags*` (HTTP API, rotas, integrações, authorizer, stage e VPC Link).
    - Elastic Load Balancing: criar, alterar e apagar o NLB, os target groups e os listeners, com `elasticloadbalancing:AddTags` e `elasticloadbalancing:Describe*`.
    - Auto Scaling: `autoscaling:AttachLoadBalancerTargetGroups`, `autoscaling:DetachLoadBalancerTargetGroups` e `autoscaling:Describe*` (anexa o ASG do node group aos target groups).
    - `rds:DescribeDBInstances` (K8s Apply e Destroy).
@@ -130,7 +130,7 @@ Os segredos são passados ao `k8s/.env` por variáveis de ambiente, sem interpol
 | **Deploy** | Pull Request para `main` | `validate` offline de foundation, addons e manifests (checks obrigatórios) → `plan` informativo de foundation e addons |
 | **Deploy** | Push na `main` | Mudança em `infra/**`, `deploy.yml` ou `_terraform.yml`: apply foundation → addons. Mudança em `k8s/**` ou `_k8s-apply.yml`: apply dos manifests com rollout restart |
 | **K8s Apply** | Manual (input `restart-pods`, padrão `true`), ou disparado pelo repo APP depois de publicar imagens | Descobre o RDS, gera o Secret, `kubectl apply -k k8s` e, opcionalmente, `rollout restart` |
-| **Destroy** | Manual, `confirm = destroy` + aprovação | Confere que o RDS e o SG dele já foram destruídos → destroy dos addons → destroy da foundation (inclui API Gateway, VPC Link e NLB) |
+| **Destroy** | Manual, `confirm = destroy` + aprovação | Confere que as Lambdas do repo LAMBDA (SG `techchallenge-oficina-lambda-sg`), o RDS e o SG dele já foram destruídos → destroy dos addons → destroy da foundation (inclui API Gateway, VPC Link e NLB) |
 
 Apply, K8s Apply e Destroy só rodam a partir da `main`. Disparados em outra branch, **falham** com erro. Os detalhes estão em [.github/workflows/README.md](.github/workflows/README.md).
 
