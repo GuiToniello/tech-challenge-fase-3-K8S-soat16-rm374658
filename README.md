@@ -5,7 +5,7 @@ Infraestrutura de rede e Kubernetes do projeto **Tech Challenge Oficina** (SOAT1
 O repositório não usa código nem state de outro repositório: tem os próprios Terraform states, a própria configuração e os próprios workflows. Ele se relaciona com outros três repositórios:
 - **[DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658)**: cria o Amazon RDS dentro da rede deste repositório.
 - **[APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658)**: builda e publica as imagens no Amazon ECR.
-- **LAMBDA**.
+- **[LAMBDA](https://github.com/GuiToniello/tech-challenge-fase-3-LAMBDA-soat16-rm374658)**: publica o Lambda authorizer e a Lambda de `POST /auth/token`, que o API Gateway deste repositório chama pelo nome.
 
 ## 1. O que é provisionado
 
@@ -51,6 +51,12 @@ flowchart TD
 ```
 
 As subnets privadas não têm NAT nem rota para a Internet. Elas hospedam o banco do repositório DB e, deste repositório, o VPC Link e o NLB interno do API Gateway. Os detalhes da arquitetura estão em [infra/ESTRUTURA.md](infra/ESTRUTURA.md), e o passo a passo local em [infra/README.md](infra/README.md). A organização dos manifests está em [k8s/README.md](k8s/README.md), e a observabilidade com Datadog, em [infra/DATADOG.md](infra/DATADOG.md).
+
+As decisões de arquitetura deste repositório ficam em [docs/](docs):
+- [RFC-001: Escolha da nuvem](docs/rfc/RFC-001-Escolha-da-Nuvem.md): por que AWS, na região `us-east-1`.
+- [ADR-016: Escalabilidade das APIs com HPA](docs/adr/ADR-016-Escalabilidade-com-HPA.md): como e por que cada API varia de 1 a 10 pods.
+
+A visão geral do sistema inteiro, com o diagrama de componentes, os diagramas de sequência e o índice de todas as RFCs e ADRs, está no [docs/arquitetura.md](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658/blob/main/docs/arquitetura.md) do repo APP.
 
 ## 2. Dependências entre repositórios
 
