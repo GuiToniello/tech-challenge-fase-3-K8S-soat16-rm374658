@@ -1,0 +1,107 @@
+# Values do chart datadog/datadog (helm_release.datadog), renderizados por templatefile:
+# site, cluster_name e env vem do Terraform. A API key entra por set_sensitive.
+datadog:
+  site: ${site}
+  # Explicito: o IMDSv2 sem hop limit impede a autodeteccao do nome do cluster.
+  clusterName: ${cluster_name}
+  tags:
+    - env:${env}
+
+  logs:
+    enabled: true
+    containerCollectAll: true
+  containerExcludeLogs: "kube_namespace:kube-system kube_namespace:datadog"
+
+  # Single Step Instrumentation: o tracer .NET v3 e injetado so nos pods do namespace oficina,
+  # sem label nos pods e sem mudanca no Dockerfile.
+  apm:
+    instrumentation:
+      enabled: true
+      targets:
+        - name: oficina-dotnet
+          namespaceSelector:
+            matchNames:
+              - oficina
+          ddTraceVersions:
+            dotnet: "3"
+          ddTraceConfigs:
+            - name: DD_LOGS_INJECTION
+              value: "true"
+            - name: DD_RUNTIME_METRICS_ENABLED
+              value: "true"
+
+  # Tira os probes do APM. Fica em datadog.env, e nao no traceAgent: a partir do Agent 7.85
+  # (config streaming) o trace-agent recebe a configuracao do Agent principal e ignora as envs proprias.
+  env:
+    - name: DD_APM_IGNORE_RESOURCES
+      value: "^GET /health"
+
+  # Cluster pequeno (2x t3.small): sem o Operator (1 pod) e sem o container system-probe.
+  operator:
+    enabled: false
+  discovery:
+    enabled: false
+
+agents:
+  priorityClassCreate: true
+  containers:
+    agent:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+    traceAgent:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 256Mi
+
+clusterAgent:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
+  # Health interno com banco (/health/ready) como cluster check: o Cluster Agent distribui as
+  # instancias entre os agents dos nodes. Gera o service check http.can_connect por service.
+  confd:
+    http_check.yaml: |-
+      cluster_check: true
+      init_config:
+      instances:
+        - name: monolith-api
+          url: http://monolith-api.oficina.svc.cluster.local/health/ready
+          timeout: 5
+          tags:
+            - service:monolith-api
+            - env:${env}
+        - name: approval-api
+          url: http://approval-api.oficina.svc.cluster.local/health/ready
+          timeout: 5
+          tags:
+            - service:approval-api
+            - env:${env}
+        - name: createos-api
+          url: http://createos-api.oficina.svc.cluster.local/health/ready
+          timeout: 5
+          tags:
+            - service:createos-api
+            - env:${env}
+        - name: getos-api
+          url: http://getos-api.oficina.svc.cluster.local/health/ready
+          timeout: 5
+          tags:
+            - service:getos-api
+            - env:${env}
+        - name: status-api
+          url: http://status-api.oficina.svc.cluster.local/health/ready
+          timeout: 5
+          tags:
+            - service:status-api
+            - env:${env}

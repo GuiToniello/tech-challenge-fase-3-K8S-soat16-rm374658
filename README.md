@@ -1,6 +1,6 @@
 # tech-challenge-fase-3-K8S-soat16-rm374658
 
-Infraestrutura de rede e Kubernetes do projeto **Tech Challenge Oficina** (SOAT16, fase 3). O Terraform deste repositório cria na AWS a VPC, o Amazon EKS, o Amazon API Gateway (acesso externo às APIs) e os addons do cluster. Os manifests Kubernetes das cinco APIs também ficam aqui, e tudo é mantido por pipelines próprias no GitHub Actions.
+Infraestrutura de rede e Kubernetes do projeto **Tech Challenge Oficina** (SOAT16, fase 3). O Terraform deste repositório cria na AWS a VPC, o Amazon EKS, o Amazon API Gateway (acesso externo às APIs) e os addons do cluster, e configura a observabilidade no Datadog. Os manifests Kubernetes das cinco APIs também ficam aqui, e tudo é mantido por pipelines próprias no GitHub Actions.
 
 O repositório não usa código nem state de outro repositório: tem os próprios Terraform states, a própria configuração e os próprios workflows. Ele se relaciona com outros três repositórios:
 - **[DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658)**: cria o Amazon RDS dentro da rede deste repositório.
@@ -14,13 +14,14 @@ Tudo fica na AWS, região `us-east-1`, em duas configurações Terraform indepen
 | Configuração | State | Recursos |
 |---|---|---|
 | [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.36), node group `t3.small` (2/2/2), access entries e o acesso externo: API Gateway (HTTP API, com o Lambda authorizer e a rota `/auth/token` do repo LAMBDA), VPC Link e NLB interno |
-| [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | Metrics Server, via Helm |
+| [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | Metrics Server e Datadog Agent, via Helm, e os recursos do Datadog no módulo [datadog/](infra/addons/datadog): métricas de log, monitores, synthetics, SLO e dashboard ([infra/DATADOG.md](infra/DATADOG.md)) |
 
-Os manifests em [k8s/](k8s) criam o namespace `oficina` e, para cada uma das cinco APIs (monolith, approval, createos, getos, status), um ConfigMap, um Deployment, um Service `NodePort` e um HPA. Também criam o Secret `oficina-api-secrets`.
+Os manifests em [k8s/](k8s) criam o namespace `oficina` e, para cada uma das cinco APIs (monolith, approval, createos, getos, status), um ConfigMap, um Deployment, um Service `NodePort` e um HPA. Também criam o Secret `oficina-api-secrets`. Os Deployments levam os labels `tags.datadoghq.com/env` e `tags.datadoghq.com/service`, que dão ao Datadog o `env` e o `service` de cada API.
 
 ```mermaid
 flowchart TD
   Internet[Internet]
+  Datadog[Datadog - SaaS\nMetricas, logs, traces,\nmonitores e dashboard]
 
   subgraph AWS[AWS - us-east-1]
     APIGW[Amazon API Gateway\nHTTP API]
@@ -45,9 +46,11 @@ flowchart TD
   NLB -->|NodePorts 30080-30084| EKS
   EKS -->|Le imagens| ECR
   EKS -->|PostgreSQL 5432| RDS
+  EKS -->|Datadog Agent - HTTPS| Datadog
+  Datadog -.->|Synthetics - health das APIs| APIGW
 ```
 
-As subnets privadas não têm NAT nem rota para a Internet. Elas hospedam o banco do repositório DB e, deste repositório, o VPC Link e o NLB interno do API Gateway. Os detalhes da arquitetura estão em [infra/ESTRUTURA.md](infra/ESTRUTURA.md), e o passo a passo local em [infra/README.md](infra/README.md). A organização dos manifests está em [k8s/README.md](k8s/README.md).
+As subnets privadas não têm NAT nem rota para a Internet. Elas hospedam o banco do repositório DB e, deste repositório, o VPC Link e o NLB interno do API Gateway. Os detalhes da arquitetura estão em [infra/ESTRUTURA.md](infra/ESTRUTURA.md), e o passo a passo local em [infra/README.md](infra/README.md). A organização dos manifests está em [k8s/README.md](k8s/README.md), e a observabilidade com Datadog, em [infra/DATADOG.md](infra/DATADOG.md).
 
 ## 2. Dependências entre repositórios
 
@@ -81,6 +84,8 @@ O nome do cluster (`techchallenge-oficina-eks`) é usado só por este repositór
 | DB | Identifier `techchallenge-oficina-postgres`, database `oficina`, usuário `sa`, porta `5432`, senha no secret `RDS_PASSWORD` | O K8s Apply descobre o endpoint e monta `DatabaseSettings__ConnectionString` no Secret das APIs |
 | DB | SG `techchallenge-oficina-rds-sg` e o identifier do RDS | O Destroy (`db-check`) confere que os dois já foram removidos antes de destruir a rede |
 | APP | Imagens `903936907231.dkr.ecr.us-east-1.amazonaws.com/techchallenge-oficina-<api>:latest`. Os 5 repositórios ECR já existem e não são gerenciados por este Terraform | Deployments com `imagePullPolicy: Always`. O pull usa a role IAM dos nodes (`AmazonEC2ContainerRegistryReadOnly`) |
+| APP | `GET /health/ready`, anônimo, que checa o banco. O `/health` continua igual, sem banco | `http_check` do Datadog Agent (service check `http.can_connect`). As probes do Kubernetes continuam em `/health` |
+| APP | Logs JSON no stdout com os atributos de [docs/observabilidade.md](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658/blob/main/docs/observabilidade.md) (`evento`, `dd.*`, `error.*` e as propriedades dos eventos), com o nível de log lido de `Serilog__MinimumLevel__*` | Métricas de log, monitores e dashboard do módulo `datadog/`, que filtram esses nomes (espelho em [infra/DATADOG.md](infra/DATADOG.md#5-contrato-com-o-repo-app-espelho)). Os ConfigMaps definem o nível de log |
 
 ## 3. Pré-requisitos (manuais, uma vez)
 
@@ -105,6 +110,7 @@ O nome do cluster (`techchallenge-oficina-eks`) é usado só por este repositór
    - `validate-foundation / terraform`
    - `validate-addons / terraform`
    - `validate-k8s / kubectl`
+7. **Conta Datadog (trial de 14 dias, sem cartão)**: crie só quando for subir o ambiente e demonstrar, porque os 14 dias contam do cadastro. Gere a API Key e a Application Key (não-escopada) e cadastre os secrets e variables `DD_*` (seção 4). Sem conta, defina a variable `DD_ENABLED=false`: o addons sobe só com o Metrics Server. Passo a passo em [infra/DATADOG.md](infra/DATADOG.md#2-configuração).
 
 ## 4. Secrets e Variables
 
@@ -114,25 +120,39 @@ O nome do cluster (`techchallenge-oficina-eks`) é usado só por este repositór
 | `AWS_SECRET_ACCESS_KEY` | Secret | Idem |
 | `RDS_PASSWORD` | Secret | Senha do RDS para a connection string. Deve ser **igual** à do repo DB |
 | `RESEND_API_KEY` | Secret | Chave da API de e-mail (Resend) das APIs |
+| `DD_API_KEY` | Secret | API Key do Datadog, usada pelo Agent e pelo provider do Terraform (addons). Obrigatória, exceto com `DD_ENABLED=false` **e** sem recursos do Datadog no state |
+| `DD_APP_KEY` | Secret | Application Key do Datadog (não-escopada), usada pelo provider do Terraform. Obrigatória, exceto com `DD_ENABLED=false` **e** sem recursos do Datadog no state |
+| `DD_ALERT_RECIPIENTS` | Secret (opcional) | Destinatários dos monitores, ex.: `@seu-email@dominio.com`. É secret porque o repositório é público e o plan imprime as mensagens dos monitores |
 | `AWS_REGION` | Variable | `us-east-1` |
 | `EKS_CLUSTER_NAME` | Variable | `techchallenge-oficina-eks` |
 | `RDS_INSTANCE_IDENTIFIER` | Variable | `techchallenge-oficina-postgres` (contrato do repo DB) |
 | `RDS_DATABASE` | Variable | `oficina` |
 | `RDS_USERNAME` | Variable | `sa` |
+| `DD_SITE` | Variable | Site do Datadog, só o host: `datadoghq.com` (US1, padrão do cadastro) ou o site escolhido. Obrigatória, exceto com `DD_ENABLED=false` **e** sem recursos do Datadog no state |
+| `DD_ENABLED` | Variable (opcional) | `true` (padrão) / `false`: desliga o Datadog, e o próximo apply do addons remove o Agent e os recursos do Datadog |
+| `DD_SYNTHETICS_STATUS` | Variable (opcional) | `live` (padrão) / `paused`: pausa os synthetics |
+
+Todos ficam no nível do **repositório**, não de environment.
+
+Ao desligar o Datadog (`DD_ENABLED` de `true` para `false`), mantenha `DD_API_KEY`, `DD_APP_KEY` e `DD_SITE` válidos até o apply que desliga o Datadog terminar: é ele que apaga os recursos do Datadog, e para isso o provider precisa das chaves e do site da conta.
 
 Os segredos são passados ao `k8s/.env` por variáveis de ambiente, sem interpolação no script. Por isso `$` e backtick na senha não são interpretados. O `;` continua proibido, porque quebra a connection string.
+
+As chaves do Datadog chegam ao Terraform do addons como `TF_VAR_datadog_*`, variáveis `sensitive` que não aparecem no plan nem nos logs. A API Key vai ao Agent por `set_sensitive` e fica no state do addons e num Secret do namespace `datadog`. Detalhes em [infra/DATADOG.md](infra/DATADOG.md#22-secrets-e-variables-do-github).
 
 ## 5. Pipelines (GitHub Actions)
 
 | Workflow | Gatilho | O que faz |
 |---|---|---|
-| **Bootstrap** | Manual | `apply` da foundation → `apply` dos addons. Não aplica manifests |
+| **Bootstrap** | Manual | `apply` da foundation → `apply` dos addons (Metrics Server e Datadog). Não aplica manifests |
 | **Deploy** | Pull Request para `main` | `validate` offline de foundation, addons e manifests (checks obrigatórios) → `plan` informativo de foundation e addons |
 | **Deploy** | Push na `main` | Mudança em `infra/**`, `deploy.yml` ou `_terraform.yml`: apply foundation → addons. Mudança em `k8s/**` ou `_k8s-apply.yml`: apply dos manifests com rollout restart |
 | **K8s Apply** | Manual (input `restart-pods`, padrão `true`), ou disparado pelo repo APP depois de publicar imagens | Descobre o RDS, gera o Secret, `kubectl apply -k k8s` e, opcionalmente, `rollout restart` |
-| **Destroy** | Manual, `confirm = destroy` + aprovação | Confere que as Lambdas do repo LAMBDA (SG `techchallenge-oficina-lambda-sg`), o RDS e o SG dele já foram destruídos → destroy dos addons → destroy da foundation (inclui API Gateway, VPC Link e NLB) |
+| **Destroy** | Manual, `confirm = destroy` + aprovação | Confere que as Lambdas do repo LAMBDA (SG `techchallenge-oficina-lambda-sg`), o RDS e o SG dele já foram destruídos → destroy dos addons (inclui o Datadog Agent e os recursos do Datadog) → destroy da foundation (inclui API Gateway, VPC Link e NLB), que roda mesmo se o dos addons falhar |
 
 Apply, K8s Apply e Destroy só rodam a partir da `main`. Disparados em outra branch, **falham** com erro. Os detalhes estão em [.github/workflows/README.md](.github/workflows/README.md).
+
+**Datadog nas pipelines:** no `infra/addons`, o plan, o apply e o destroy começam pelo passo **Conferir secrets e variables do Datadog**. Ele falha se faltar `DD_API_KEY`, `DD_APP_KEY` ou `DD_SITE` e, com `DD_ENABLED=false`, só avisa. Os valores entram no Terraform como `TF_VAR_datadog_*`. O addons instala o Datadog Agent antes do K8s Apply, e o restart dos pods faz o Datadog injetar neles o tracer .NET (APM). Trocar `DD_ENABLED` ou `DD_SYNTHETICS_STATUS` não dispara nada: rode o Bootstrap para aplicar. O Bootstrap não reinicia os pods: ao ligar o Datadog (`DD_ENABLED` de `false` para `true`), rode em seguida o **K8s Apply** com `restart-pods = true`, para os pods subirem com o tracer.
 
 **Atenção ao custo: um merge em `infra/**` com o ambiente desligado recria o ambiente.** A foundation não depende de nada existente, então o push na `main` aplica a foundation e os addons do zero, subindo VPC, EKS, nodes, NLB e API Gateway. Isso inclui o **primeiro push** deste código. Como na fase 2, é o comportamento esperado; tenha isso em mente:
 - **Com a infra destruída:**
@@ -163,11 +183,15 @@ Copy-Item k8s/.env.example k8s/.env
 kubectl kustomize k8s
 ```
 
-O `k8s/.env` e os `terraform.tfvars` são ignorados pelo Git. Os `.terraform.lock.hcl` **são** versionados e fixam as versões dos providers (aws 6.66.0, helm 2.17.0).
+O `k8s/.env` e os `terraform.tfvars` são ignorados pelo Git. Os `.terraform.lock.hcl` **são** versionados e fixam as versões dos providers (aws 6.66.0, helm 2.17.0 e, no addons, DataDog/datadog 4.25.0). Os charts também são fixos: Metrics Server `3.12.2` e Datadog Agent `3.255.0` (`datadog_chart_version`).
+
+O `validate` não precisa das chaves do Datadog. Para `plan` e `apply` locais do addons, passe as chaves por `TF_VAR_datadog_*` e mantenha as opções do Datadog no `terraform.tfvars` iguais às variables do GitHub ([infra/README.md](infra/README.md#4-instale-os-addons)).
 
 ## 7. Destruição e custos
 
 EKS, nodes, NLB, API Gateway (cobrado por requisição) e o tráfego geram custo enquanto existem.
+
+**Datadog:** sem custo durante o trial de 14 dias, sem cartão. Depois dele, APM, logs e synthetics param (plano Free). Antes do fim, defina `DD_ENABLED=false` e rode o Bootstrap, ou rode o Destroy. Nunca cadastre cartão ([infra/DATADOG.md](infra/DATADOG.md#4-trial-de-14-dias)).
 
 **Atenção à versão do EKS:** `eks_version` é `1.36` ([variables.tf](infra/foundation/variables.tf)), no suporte padrão da AWS até 02/08/2027. Fora do suporte padrão, o control plane é cobrado na tarifa de *extended support*, várias vezes a tarifa padrão. O EKS só atualiza um cluster existente uma minor por vez: para trocar `eks_version`, destrua o ambiente antes do merge e deixe o Deploy recriá-lo na nova versão.
 
@@ -175,7 +199,11 @@ Para remover tudo:
 1. Destrua o LAMBDA e o **DB**. O APP não tem recursos a destruir, porque o ECR é manual.
 2. Rode o workflow **Destroy** deste repositório com `confirm = destroy` e aprove.
 
-A ordem interna é addons → foundation. O bucket S3 do state não é removido.
+A ordem interna é addons → foundation:
+- O destroy dos addons remove o Metrics Server, o Datadog Agent e os recursos do Datadog. A conta e as chaves continuam.
+- O destroy da foundation roda **mesmo se o dos addons falhar** (por exemplo, com chaves do Datadog revogadas ou trial vencido), para o EKS não ficar ligado gerando custo, mas não se ele for cancelado. O run fica vermelho, e é preciso agir logo, mesmo sem planos de subir o ambiente de novo: os recursos do Datadog que sobraram continuam ativos (synthetics e monitores alertando), e sem o cluster o addons não roda mais. As saídas estão no troubleshooting do [infra/DATADOG.md](infra/DATADOG.md#8-troubleshooting).
+
+O bucket S3 do state não é removido.
 
 ## 8. Troubleshooting
 
@@ -187,3 +215,4 @@ A ordem interna é addons → foundation. O bucket S3 do state não é removido.
 - **Destroy da foundation travado em `DependencyViolation` na VPC/subnets**: procure uma ENI órfã na VPC (por exemplo, do VPC Link do API Gateway). Espere alguns minutos ou apague-a e rode o Destroy de novo.
 - **Destroy aparece como "cancelled"**: no padrão do GitHub (`queue: single`), um run mais novo no mesmo grupo de concorrência substituiu o que estava pendente. Rode o Destroy de novo, sem Deploy, Bootstrap ou K8s Apply em andamento.
 - **`Error acquiring the state lock`**: há outro apply ou destroy rodando no mesmo root. Se o lock ficou preso depois de um run cancelado, rode `terraform force-unlock <LOCK_ID>` na pasta do root, ou apague o objeto `.tflock` correspondente no bucket.
+- **Datadog** (passo "Conferir secrets e variables do Datadog" falhando, Agent ou pods `Pending`, synthetics vermelhos, chaves inválidas ou revogadas): veja o troubleshooting em [infra/DATADOG.md](infra/DATADOG.md#8-troubleshooting).

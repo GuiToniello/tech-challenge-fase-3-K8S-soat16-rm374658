@@ -6,6 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: getos-api
     app.kubernetes.io/part-of: techchallenge-oficina
+    tags.datadoghq.com/env: study
+    tags.datadoghq.com/service: getos-api
 spec:
   replicas: 1
   revisionHistoryLimit: 3
@@ -17,6 +19,8 @@ spec:
       labels:
         app.kubernetes.io/name: getos-api
         app.kubernetes.io/part-of: techchallenge-oficina
+        tags.datadoghq.com/env: study
+        tags.datadoghq.com/service: getos-api
     spec:
       containers:
         - name: getos-api

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Digite "destroy" para confirmar a remoção do EKS, addons e VPC'
+        description: 'Digite "destroy" para confirmar a remoção do EKS, addons, recursos do Datadog e VPC'
         required: true
         type: string
 
@@ -79,8 +79,12 @@ jobs:
       command: destroy
     secrets: inherit
 
+  # Roda mesmo se o destroy dos addons falhar (ex.: chaves do Datadog revogadas ou trial vencido),
+  # para o EKS nunca ficar ligado gerando custo. O run continua vermelho, então a falha fica visível.
+  # Não roda se o dos addons for cancelado (ex.: substituído na fila por outro run), para não destruir o EKS com os addons intactos
   terraform-destroy-foundation:
-    needs: terraform-destroy-addons
+    needs: [gate, terraform-destroy-addons]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.terraform-destroy-addons.result != 'cancelled' }}
     uses: ./.github/workflows/_terraform.yml
     with:
       working-directory: infra/foundation

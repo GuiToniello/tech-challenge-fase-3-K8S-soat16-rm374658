@@ -1,2 +1,10 @@
 aws_region   = "us-east-1"
 cluster_name = "techchallenge-oficina-eks"
+
+# Datadog. As chaves nao ficam aqui: use TF_VAR_datadog_api_key e TF_VAR_datadog_app_key
+# (no CI vem dos secrets DD_API_KEY e DD_APP_KEY). Destinatarios dos alertas: TF_VAR_datadog_alert_recipients.
+datadog_enabled           = true
+datadog_site              = "datadoghq.com"
+datadog_env               = "study"
+datadog_chart_version     = "3.255.0"
+datadog_synthetics_status = "live"

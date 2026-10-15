@@ -6,6 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: status-api
     app.kubernetes.io/part-of: techchallenge-oficina
+    tags.datadoghq.com/env: study
+    tags.datadoghq.com/service: status-api
 spec:
   replicas: 1
   revisionHistoryLimit: 3
@@ -17,6 +19,8 @@ spec:
       labels:
         app.kubernetes.io/name: status-api
         app.kubernetes.io/part-of: techchallenge-oficina
+        tags.datadoghq.com/env: study
+        tags.datadoghq.com/service: status-api
     spec:
       containers:
         - name: status-api

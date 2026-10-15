@@ -10,5 +10,9 @@ terraform {
       source  = "hashicorp/helm"
       version = "~> 2.17"
     }
+    datadog = {
+      source  = "DataDog/datadog"
+      version = "~> 4.25"
+    }
   }
 }

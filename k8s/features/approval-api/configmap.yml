@@ -10,5 +10,5 @@ data:
   ASPNETCORE_ENVIRONMENT: "Production"
   ASPNETCORE_URLS: "http://+:8080"
   AllowedHosts: "*"
-  Logging__LogLevel__Default: "Information"
-  Logging__LogLevel__Microsoft__AspNetCore: "Warning"
+  Serilog__MinimumLevel__Default: "Information"
+  Serilog__MinimumLevel__Override__Microsoft.AspNetCore: "Warning"

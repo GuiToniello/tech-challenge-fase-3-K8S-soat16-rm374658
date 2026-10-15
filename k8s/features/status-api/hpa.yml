@@ -20,9 +20,10 @@ spec:
         target:
           type: Utilization
           averageUtilization: 30
+    # Memória em 150% do request (192Mi): com o tracer .NET do Datadog, o uso em repouso passa dos 80% (~102Mi) e o HPA escalaria sem carga
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 80
+          averageUtilization: 150

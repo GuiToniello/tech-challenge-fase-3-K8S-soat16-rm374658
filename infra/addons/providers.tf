@@ -17,3 +17,11 @@ provider "helm" {
     token                  = data.aws_eks_cluster_auth.this.token
   }
 }
+
+# Com datadog_enabled = false as chaves podem ficar vazias: o provider nao valida a API key.
+provider "datadog" {
+  api_key  = var.datadog_api_key
+  app_key  = var.datadog_app_key
+  api_url  = "https://api.${var.datadog_site}/"
+  validate = var.datadog_enabled
+}

@@ -4,7 +4,7 @@
 
 Provisionar a rede e o Amazon EKS onde rodam as cinco APIs e expô-las na Internet por HTTPS, pelo endpoint padrão (`execute-api`) de um Amazon API Gateway.
 
-O Terraform gerencia a infraestrutura AWS, inclusive o API Gateway (state `foundation`), e, num state separado (`addons`), instala o Metrics Server via Helm. Os manifests das APIs ([k8s/](../k8s/kustomization.yaml)) são aplicados pelo GitHub Actions com `kubectl apply -k k8s` (seção [Aplicação dos manifests](#aplicação-dos-manifests)).
+O Terraform gerencia a infraestrutura AWS, inclusive o API Gateway (state `foundation`), e, num state separado (`addons`), instala o Metrics Server e o Datadog Agent via Helm e cria os recursos do Datadog (módulo local `addons/datadog/`). Os manifests das APIs ([k8s/](../k8s/kustomization.yaml)) são aplicados pelo GitHub Actions com `kubectl apply -k k8s` (seção [Aplicação dos manifests](#aplicação-dos-manifests)).
 
 O banco de dados (RDS PostgreSQL) não é criado aqui: ele fica no [repositório DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658). O build das imagens e o push para o ECR ficam no [repositório APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658).
 
@@ -15,7 +15,8 @@ O banco de dados (RDS PostgreSQL) não é criado aqui: ele fica no [repositório
 - States:
   - `techchallenge-oficina/k8s-foundation.tfstate`.
   - `techchallenge-oficina/k8s-addons.tfstate`.
-- Os arquivos `.terraform.lock.hcl` são versionados: provider AWS `6.66.0` nas duas pastas e Helm `2.17.0` no addons.
+- Os arquivos `.terraform.lock.hcl` são versionados: provider AWS `6.66.0` nas duas pastas, e Helm `2.17.0` e DataDog/datadog `4.25.0` no addons.
+- Observabilidade com Datadog (conta trial): o Agent (Helm) e os recursos do Datadog (métricas de log, monitores, synthetics, SLO e dashboard) ficam em Terraform, no addons, e são ligados ou desligados pela variable `DD_ENABLED` do GitHub. Detalhes em [DATADOG.md](DATADOG.md).
 - Sem Route 53, domínio próprio ou certificado próprio: o acesso usa o endpoint padrão do API Gateway (`https://<id>.execute-api.us-east-1.amazonaws.com`), que só atende HTTPS.
 - O API Gateway é uma HTTP API com um Lambda authorizer (repo LAMBDA) nas rotas das APIs. Ele exige um JWT válido do Auth0 com a claim `cpf`; o cadastro de cliente (`POST /monolith/api/clientes`) aceita JWT sem `cpf`. As APIs continuam validando o JWT. Ficam públicas, sem authorizer, as rotas `GET /<api>/health` e `POST /auth/token` (Lambda que gera o JWT com `cpf`).
 - Não há Ingress nem Ingress Controller. O API Gateway chega aos pods por VPC Link → NLB interno → NodePort, tudo criado pelo Terraform da foundation. Nenhum Load Balancer é criado pelo Kubernetes.
@@ -31,8 +32,9 @@ Antes do primeiro Bootstrap, devem existir:
 2. Usuário IAM `terraform`, cujas access keys vão para os secrets do GitHub. Precisa de permissões para criar a foundation (VPC, IAM, EKS, API Gateway, NLB e o attachment dos target groups ao Auto Scaling Group; lista no [README principal](../README.md#3-pré-requisitos-manuais-uma-vez)), consultar o usuário `cluster_admin`, criar Access Entries no EKS e, no K8s Apply e no Destroy, executar `eks:DescribeCluster` e `rds:DescribeDBInstances`.
 3. Usuário IAM `cluster_admin`. **Obrigatório**: a foundation o consulta por data source, e o `plan` falha se ele não existir.
 4. Secrets, Variables e o Environment `destroy` no GitHub, descritos em [.github/workflows/README.md](../.github/workflows/README.md).
+5. Conta Datadog (trial de 14 dias), com a API Key e a Application Key nos secrets do GitHub, exceto com `DD_ENABLED=false` ([DATADOG.md](DATADOG.md#2-configuração)).
 
-O Terraform não cria esses usuários nem o bucket. Access keys, secrets, `terraform.tfvars` real e `k8s/.env` nunca devem ser versionados.
+O Terraform não cria esses usuários, o bucket nem a conta do Datadog. Access keys, chaves do Datadog, secrets, `terraform.tfvars` real e `k8s/.env` nunca devem ser versionados.
 
 ## Arquitetura
 
@@ -65,7 +67,7 @@ VPC 10.0.0.0/16 (tag Project = techchallenge-oficina)
     -> RDS do repo DB, VPC Link e NLB interno; sem NAT e sem rota para a Internet
 ```
 
-Não há NAT Gateway. Os nodes usam saída pelas subnets públicas para acessar ECR e demais serviços AWS.
+Não há NAT Gateway. Os nodes usam saída pelas subnets públicas para acessar ECR e demais serviços AWS. Pela mesma saída, o Datadog Agent (namespace `datadog`) envia ao Datadog as métricas, os logs e os traces. No sentido inverso, os Synthetics do Datadog chamam `GET /<api>/health` pelo API Gateway, como qualquer cliente externo.
 
 ### Security Groups
 
@@ -125,8 +127,13 @@ Localização: `infra/addons/`
 Responsabilidades:
 
 - Usar as mesmas credenciais do usuário `terraform`.
-- Consultar o cluster pelo nome, sem ler o state remoto da foundation. Por isso, o `plan` do addons exige o cluster EKS de pé.
+- Consultar o cluster pelo nome, sem ler o state remoto da foundation. Por isso, o `plan` do addons exige o cluster EKS de pé e, com o Datadog ligado, chaves do Datadog válidas.
 - Instalar Metrics Server (chart `3.12.2`) via Helm, usado pelos HPAs.
+- Instalar o Datadog Agent (chart `3.255.0`, namespace `datadog`) via Helm, em [datadog-agent.tf](addons/datadog-agent.tf) com os valores de [datadog-agent-values.yaml](addons/datadog-agent-values.yaml): um Agent por node e um Cluster Agent, APM .NET por Single Step Instrumentation no namespace `oficina`, coleta dos logs dos containers e `http_check` em `/health/ready`.
+- Criar os recursos do Datadog no módulo local [addons/datadog/](addons/datadog), chamado por [datadog.tf](addons/datadog.tf): 5 métricas de log, 10 monitores, 5 synthetics com 1 SLO e 1 dashboard (output `datadog_dashboard_url`). Os synthetics leem a URL do API Gateway por data source.
+- O Agent e o módulo têm `count` por `datadog_enabled`. Com `false` (`DD_ENABLED=false` no CI), os dois saem no próximo apply.
+
+No CI, as chaves e as opções do Datadog chegam por `TF_VAR_datadog_*`, a partir dos secrets e variables do GitHub. Localmente, as chaves vão por `TF_VAR_datadog_*`, e as opções ficam no `terraform.tfvars` ([README.md](README.md#4-instale-os-addons)). Detalhes em [DATADOG.md](DATADOG.md).
 
 ## Contrato com o repo DB
 
@@ -188,16 +195,16 @@ kubectl kustomize k8s
 
 São as mesmas verificações obrigatórias dos PRs (`validate-foundation`, `validate-addons` e `validate-k8s`). O `plan` com AWS roda no PR como informativo. O `apply` não é manual: roda pelo Bootstrap ou pelo push na `main`, primeiro na foundation e depois nos addons.
 
-O CI não usa `terraform.tfvars` e aplica os defaults de `variables.tf`. Se criar um localmente a partir do `terraform.tfvars.example`, mantenha os mesmos valores, pois o state é o mesmo do CI. Para atualizar os providers, rode `terraform init -upgrade` e depois `terraform providers lock -platform=linux_amd64 -platform=windows_amd64`.
+O CI não usa `terraform.tfvars`: aplica os defaults de `variables.tf` e, no addons, recebe as chaves e as opções do Datadog como `TF_VAR_datadog_*`, a partir dos secrets e variables do GitHub. Localmente, as chaves vão por `TF_VAR_datadog_*` ([README.md](README.md#4-instale-os-addons)). Se criar um `terraform.tfvars` a partir do `terraform.tfvars.example`, mantenha os mesmos valores do CI, inclusive `datadog_enabled`, `datadog_site` e `datadog_synthetics_status` iguais às variables `DD_*`, pois o state é o mesmo. Ao adicionar um provider (como o `DataDog/datadog`, no addons), rode `terraform init` e depois `terraform providers lock -platform=linux_amd64 -platform=windows_amd64`; para atualizar os providers, use `terraform init -upgrade` antes do `providers lock`.
 
 ## Destruição e custos
 
-EKS (control plane cobrado por hora), os dois nodes com seus discos EBS, o NLB interno (cobrado por hora) e o API Gateway (cobrado por requisição) geram custos enquanto existem.
+EKS (control plane cobrado por hora), os dois nodes com seus discos EBS, o NLB interno (cobrado por hora) e o API Gateway (cobrado por requisição) geram custos enquanto existem. O Datadog não tem custo durante o trial de 14 dias, sem cartão; antes do fim, defina `DD_ENABLED=false` e rode o Bootstrap, ou rode o Destroy ([DATADOG.md](DATADOG.md#4-trial-de-14-dias)).
 
 Ordem entre repositórios: **LAMBDA** → **DB** → **K8S**. O APP não tem recursos a destruir, porque o ECR é manual. O RDS usa as subnets privadas e o SG dele referencia o SG dos nodes; se ainda existir, o destroy da VPC falha com `DependencyViolation`.
 
 Neste repositório, rode o workflow [Destroy](../.github/workflows/destroy.yml) com `confirm = destroy` e aprove no Environment `destroy`. A sequência é:
 1. `db-check`: falha se o SG `techchallenge-oficina-lambda-sg` (repo LAMBDA), o RDS `techchallenge-oficina-postgres` ou o SG `techchallenge-oficina-rds-sg` ainda existirem.
 2. `gate`: aprovação manual.
-3. Addons.
-4. Foundation, que leva junto o API Gateway, o VPC Link e o NLB. Nenhum Load Balancer é criado pelo Kubernetes, então não há o que limpar antes. O bucket S3 do state e o ECR do repo APP ficam fora do `destroy`.
+3. Addons: Metrics Server, Datadog Agent e recursos do Datadog.
+4. Foundation, que leva junto o API Gateway, o VPC Link e o NLB. Nenhum Load Balancer é criado pelo Kubernetes, então não há o que limpar antes. Roda mesmo se o destroy dos addons falhar (por exemplo, com chaves do Datadog revogadas), para o EKS não ficar ligado gerando custo; o run fica vermelho. O bucket S3 do state e o ECR do repo APP ficam fora do `destroy`.

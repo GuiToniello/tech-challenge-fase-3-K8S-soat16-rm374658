@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       working-directory:
-        description: "Pasta do Terraform (infra/foundation ou infra/addons)"
+        description: "Pasta do Terraform (infra/foundation ou infra/addons, que também gerencia o Datadog)"
         required: true
         type: string
       command:
@@ -36,6 +36,29 @@ jobs:
           exit 1
         working-directory: .
 
+      # Só no addons: o provider e o Agent do Datadog precisam das chaves e do site, exceto com DD_ENABLED=false
+      - name: Conferir secrets e variables do Datadog
+        if: inputs.working-directory == 'infra/addons' && inputs.command != 'validate'
+        env:
+          DD_ENABLED: ${{ vars.DD_ENABLED || 'true' }}
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
+          DD_SITE: ${{ vars.DD_SITE }}
+        run: |
+          if [ "$DD_ENABLED" = "false" ]; then
+            echo "::notice::DD_ENABLED=false: Datadog desligado (o Terraform remove ou não cria o Agent e os recursos do Datadog). Para apagar recursos do Datadog que já existem, DD_API_KEY, DD_APP_KEY e DD_SITE precisam continuar válidos."
+            exit 0
+          fi
+          missing=0
+          for name in DD_API_KEY DD_APP_KEY DD_SITE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name não configurado (Settings → Secrets and variables → Actions). Sem Datadog, defina a variable DD_ENABLED=false."
+              missing=1
+            fi
+          done
+          exit $missing
+        working-directory: .
+
       - uses: actions/checkout@v7
 
       - uses: aws-actions/configure-aws-credentials@v6
@@ -62,8 +85,22 @@ jobs:
       # Plan especulativo (PR): não grava state, então roda sem lock
       - name: Terraform Plan
         if: inputs.command == 'plan'
+        env:
+          TF_VAR_datadog_enabled: ${{ vars.DD_ENABLED || 'true' }}
+          TF_VAR_datadog_api_key: ${{ secrets.DD_API_KEY }}
+          TF_VAR_datadog_app_key: ${{ secrets.DD_APP_KEY }}
+          TF_VAR_datadog_site: ${{ vars.DD_SITE || 'datadoghq.com' }}  # padrão do variables.tf: vazio, o provider apontaria para https://api./
+          TF_VAR_datadog_alert_recipients: ${{ secrets.DD_ALERT_RECIPIENTS }}  # secret: o repo é público e o plan imprime as mensagens
+          TF_VAR_datadog_synthetics_status: ${{ vars.DD_SYNTHETICS_STATUS || 'live' }}
         run: terraform plan -input=false -lock=false
 
       - name: Terraform ${{ inputs.command }}
         if: inputs.command == 'apply' || inputs.command == 'destroy'
+        env:
+          TF_VAR_datadog_enabled: ${{ vars.DD_ENABLED || 'true' }}
+          TF_VAR_datadog_api_key: ${{ secrets.DD_API_KEY }}
+          TF_VAR_datadog_app_key: ${{ secrets.DD_APP_KEY }}
+          TF_VAR_datadog_site: ${{ vars.DD_SITE || 'datadoghq.com' }}  # padrão do variables.tf: vazio, o provider apontaria para https://api./
+          TF_VAR_datadog_alert_recipients: ${{ secrets.DD_ALERT_RECIPIENTS }}  # secret: o repo é público e o plan imprime as mensagens
+          TF_VAR_datadog_synthetics_status: ${{ vars.DD_SYNTHETICS_STATUS || 'live' }}
         run: terraform ${{ inputs.command }} -auto-approve -input=false

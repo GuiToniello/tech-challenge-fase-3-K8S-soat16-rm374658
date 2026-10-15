@@ -30,6 +30,7 @@ Cada pasta de API contém:
 - O API Gateway recebe as requisições HTTPS e, pelo VPC Link e pelo NLB interno (criados pela foundation), entrega cada caminho no NodePort da API correspondente (seção 8).
 - Os ConfigMaps guardam configurações não sensíveis. O Secret compartilhado guarda os dados sensíveis (conexão com o RDS e chave do Resend).
 - Um HPA acompanha CPU e memória e ajusta cada Deployment entre 1 e 10 réplicas, com base nas métricas do Metrics Server.
+- O Datadog Agent (namespace `datadog`, instalado pelo `infra/addons`) coleta métricas, logs e traces dos pods. O tracer .NET (APM) é injetado pelo próprio Agent nos pods do namespace `oficina`, sem mudança na imagem (seção 4.4).
 
 ```mermaid
 flowchart TD
@@ -47,6 +48,7 @@ flowchart TD
     end
 
     Metrics[Metrics Server] --> HPA
+    Pods -.->|logs, metricas e traces| Agent[Datadog Agent\nnamespace datadog]
   end
 
   NLB --> Services
@@ -54,7 +56,7 @@ flowchart TD
 
 ## 3. Ordem de aplicação
 Pré-requisitos, nesta ordem:
-1. Cluster, API Gateway e addons: workflow **Bootstrap** deste repositório (foundation → addons). O API Gateway, o VPC Link e o NLB são criados pela foundation. O Metrics Server é instalado pelo Terraform via Helm, em `infra/addons`.
+1. Cluster, API Gateway e addons: workflow **Bootstrap** deste repositório (foundation → addons). O API Gateway, o VPC Link e o NLB são criados pela foundation. O Metrics Server e o Datadog Agent são instalados pelo Terraform via Helm, em `infra/addons`.
 2. RDS: **Bootstrap** do repositório [DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658).
 3. Imagens no ECR: publicadas pelo repositório [APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658).
 
@@ -71,15 +73,16 @@ Não use `kubectl apply -f` por pasta: o Secret `oficina-api-secrets` só é ger
 
 Comandos para verificação:
 - `kubectl get pods,svc,hpa -n oficina`
+- `kubectl get pods -n datadog` (2 agents e 1 cluster-agent)
 
 Opcional: para acessar uma API via localhost sem passar pelo API Gateway, encaminhe a porta do Service:
 - `kubectl port-forward -n oficina service/monolith-api 8080:80` (depois, `http://localhost:8080/health`)
 
 ## 4. Recursos criados por API
 Para cada API foram criados os seguintes recursos:
-1. ConfigMap `<api>-config` com configurações não sensíveis (`ASPNETCORE_ENVIRONMENT=Production`, `ASPNETCORE_URLS=http://+:8080`, logging).
+1. ConfigMap `<api>-config` com configurações não sensíveis (`ASPNETCORE_ENVIRONMENT=Production`, `ASPNETCORE_URLS=http://+:8080`) e o nível de log do Serilog (`Serilog__MinimumLevel__Default=Information` e `Serilog__MinimumLevel__Override__Microsoft.AspNetCore=Warning`). A chave com ponto é válida em ConfigMap e em `envFrom` no EKS 1.36.
 2. Secret comum `oficina-api-secrets`, gerado pelo Kustomize a partir do `k8s/.env` (seção 5).
-3. Deployment com 1 réplica inicial, porta 8080, probes (startup, liveness e readiness) em `/health` e recursos de 100m/128Mi (requests) e 500m/512Mi (limits).
+3. Deployment com 1 réplica inicial, porta 8080, probes (startup, liveness e readiness) em `/health`, recursos de 100m/128Mi (requests) e 500m/512Mi (limits) e os labels do Datadog (seção 4.4).
 4. Service do tipo NodePort (porta 80 → 8080, com `nodePort` fixo; tabela na seção 8).
 5. HPA (autoscaling/v2).
 6. Pull das imagens privadas no ECR usando a role IAM dos nodes do EKS.
@@ -106,6 +109,18 @@ A role IAM dos nodes tem a policy gerenciada `AmazonEC2ContainerRegistryReadOnly
 
 A mesma região AWS facilita o acesso ao registry, mas não substitui a permissão IAM nem a conectividade de rede. Os nodes ficam nas subnets públicas, com IP público, e acessam o ECR pela internet (não há NAT).
 
+### 4.4 Labels do Datadog (Unified Service Tagging)
+Cada Deployment tem, em `metadata.labels` **e** em `spec.template.metadata.labels`:
+- `tags.datadoghq.com/env: study`
+- `tags.datadoghq.com/service: <api>-api`, o nome do Deployment (`monolith-api`, `approval-api`, `createos-api`, `getos-api` ou `status-api`)
+
+O admission controller do Datadog lê esses labels e injeta `DD_ENV` e `DD_SERVICE` nos pods, e o Agent marca logs, métricas e traces com `env:study` e `service:<api>-api`. São os valores que os monitores e o dashboard filtram ([infra/DATADOG.md](../infra/DATADOG.md)).
+- Os labels **nunca** entram no `spec.selector`, que é imutável.
+- O label `admission.datadoghq.com/enabled` não é necessário: a injeção do tracer (Single Step Instrumentation) já fica restrita ao namespace `oficina` na configuração do Agent.
+- O tracer só entra nos pods criados com o Agent rodando. Se o Agent for instalado com as APIs já no ar, os pods precisam de um rollout restart. No merge que traz o Datadog, o Deploy já faz isso (addons antes do K8s Apply com restart). Ao ligar o Datadog pelo Bootstrap (`DD_ENABLED` de `false` para `true`), rode em seguida o **K8s Apply** com `restart-pods = true`, para os pods subirem com o tracer.
+- As probes continuam em `/health`. O `/health/ready`, que checa o banco, é usado só pelo `http_check` do Agent: assim a ordem de deploy entre os repositórios não fica acoplada, e uma queda do banco não tira os pods do Service.
+- Não há `tags.datadoghq.com/version`, porque as imagens usam a tag `latest`.
+
 ## 5. Secret das APIs
 O [kustomization.yaml](kustomization.yaml) gera o Secret `oficina-api-secrets` a partir do `k8s/.env`, com as chaves de [.env.example](.env.example):
 - `DatabaseSettings__ConnectionString`: aponta para o RDS do repositório [DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658).
@@ -121,9 +136,9 @@ O `k8s/.env` é ignorado pelo Git e nunca deve ser versionado; apenas o `.env.ex
 Como o `kustomization.yaml` usa `disableNameSuffixHash: true`, o nome do Secret não muda quando o conteúdo muda, e os Deployments não reiniciam sozinhos. O mesmo vale para os ConfigMaps: eles são lidos via `envFrom` e não têm hash no nome. Por isso, o apply de push em `k8s/**` sempre faz o rollout restart. Depois de trocar um valor fora do Git, como a senha do RDS ou a chave do Resend, rode o K8s Apply com `restart-pods = true`.
 
 ## 6. Regras de HPA aplicadas
-Foi seguido o requisito informado:
+Foi seguido o requisito informado, com a memória ajustada para o Datadog:
 1. CPU alvo: 30% de utilização.
-2. Memória alvo: 80% de utilização.
+2. Memória alvo: 150% de utilização, ou seja, 192Mi sobre o request de 128Mi. Era 80%, mas o tracer .NET do Datadog (APM) soma memória a cada pod: em repouso, o uso passaria dos 80% (~102Mi), e o HPA escalaria sem carga até faltar espaço nos nodes. Os requests não mudaram. Se, depois do deploy, o HPA ainda escalar sem carga (`kubectl top pods -n oficina` e `kubectl get hpa -n oficina`), deixe só a métrica de CPU.
 3. Mínimo: 1 réplica.
 4. Máximo: 10 réplicas.
 
@@ -135,6 +150,13 @@ Aplicado em:
 - [features/createos-api/hpa.yml](features/createos-api/hpa.yml)
 - [features/getos-api/hpa.yml](features/getos-api/hpa.yml)
 - [features/status-api/hpa.yml](features/status-api/hpa.yml)
+
+### 6.1 Capacidade do cluster
+O node group tem 2 nodes `t3.small` fixos, com 11 pods por node (22 no total) e cerca de 1,4 GiB alocáveis em cada um.
+- Sem o Datadog, rodam 12 pods. O Datadog soma 3 (um Agent por node e um Cluster Agent): **15 de 22** em regime.
+- No rollout restart das 5 APIs, o pico chega a cerca de **20 de 22**.
+- Os requests de memória somam cerca de 1,9 GiB em regime e 2,5 GiB no restart, contra ~2,9 GiB alocáveis. Cabe, mas apertado: réplicas extras do HPA podem ficar `Pending`.
+- Contingência: nodes `t3.medium` (`node_instance_type` da foundation). A troca **substitui o node group** e é disruptiva; faça só numa janela, ou num Destroy/Bootstrap.
 
 ## 7. Namespace
 Todos os recursos ficam no namespace `oficina`, definido em [base/namespace.yml](base/namespace.yml) e forçado pelo `namespace` do [kustomization.yaml](kustomization.yaml).
@@ -183,11 +205,11 @@ O build deve gerar:
 - Namespace `oficina`.
 - ConfigMaps das APIs.
 - Secret `oficina-api-secrets`, gerado a partir do `k8s/.env`.
-- Deployments, Services (`NodePort`) e HPAs das cinco APIs.
+- Deployments (com os labels `tags.datadoghq.com/*`), Services (`NodePort`) e HPAs das cinco APIs.
 
 ## 10. Finalização
 Antes de promover para ambientes compartilhados (qa/homolog/prod), recomenda-se:
-1. Trocar a tag `latest` por tags versionadas publicadas pelo repositório APP, para ter deploys rastreáveis e rollback.
+1. Trocar a tag `latest` por tags versionadas publicadas pelo repositório APP, para ter deploys rastreáveis e rollback. Com elas, dá para adicionar o label `tags.datadoghq.com/version`.
 2. Manter a senha do RDS e a chave do Resend apenas nos secrets do GitHub (`RDS_PASSWORD`, `RESEND_API_KEY`).
-3. Revisar requests/limits de CPU e memória conforme a carga real. O node group tem 2 nodes `t3.small` fixos (min/desired/max 2/2/2), então o HPA pode criar pods que ficam `Pending` por falta de capacidade.
-4. Garantir que a foundation (API Gateway e NLB) e o `infra/addons` (Metrics Server) estejam aplicados antes do apply dos manifests.
+3. Revisar requests/limits de CPU e memória conforme a carga real. O node group tem 2 nodes `t3.small` fixos (min/desired/max 2/2/2), então o HPA pode criar pods que ficam `Pending` por falta de capacidade. Com o Datadog, a folga é menor (seção 6.1).
+4. Garantir que a foundation (API Gateway e NLB) e o `infra/addons` (Metrics Server e Datadog Agent) estejam aplicados antes do apply dos manifests.
