@@ -4,7 +4,7 @@
 
 Provisionar a rede e o Amazon EKS onde rodam as cinco APIs e expô-las na Internet por HTTPS, pelo endpoint padrão (`execute-api`) de um Amazon API Gateway.
 
-O Terraform gerencia a infraestrutura AWS, inclusive o API Gateway (state `foundation`), e, num state separado (`addons`), instala o Metrics Server e o Datadog Agent via Helm e cria os recursos do Datadog (módulo local `addons/datadog/`). Os manifests das APIs ([k8s/](../k8s/kustomization.yaml)) são aplicados pelo GitHub Actions com `kubectl apply -k k8s` (seção [Aplicação dos manifests](#aplicação-dos-manifests)).
+O Terraform gerencia a infraestrutura AWS, inclusive o API Gateway (state `foundation`), e, num state separado (`addons`), instala o Metrics Server e o Datadog Agent via Helm e cria os recursos do Datadog (módulo local `addons/modules/datadog/`). Os manifests das APIs ([k8s/](../k8s/kustomization.yaml)) são aplicados pelo GitHub Actions com `kubectl apply -k k8s` (seção [Aplicação dos manifests](#aplicação-dos-manifests)).
 
 O banco de dados (RDS PostgreSQL) não é criado aqui: ele fica no [repositório DB](https://github.com/GuiToniello/tech-challenge-fase-3-DB-soat16-rm374658). O build das imagens e o push para o ECR ficam no [repositório APP](https://github.com/GuiToniello/tech-challenge-fase-3-APP-soat16-rm374658).
 
@@ -130,7 +130,7 @@ Responsabilidades:
 - Consultar o cluster pelo nome, sem ler o state remoto da foundation. Por isso, o `plan` do addons exige o cluster EKS de pé e, com o Datadog ligado, chaves do Datadog válidas.
 - Instalar Metrics Server (chart `3.12.2`) via Helm, usado pelos HPAs.
 - Instalar o Datadog Agent (chart `3.255.0`, namespace `datadog`) via Helm, em [datadog-agent.tf](addons/datadog-agent.tf) com os valores de [datadog-agent-values.yaml](addons/datadog-agent-values.yaml): um Agent por node e um Cluster Agent, APM .NET por Single Step Instrumentation no namespace `oficina`, coleta dos logs dos containers e `http_check` em `/health/ready`.
-- Criar os recursos do Datadog no módulo local [addons/datadog/](addons/datadog), chamado por [datadog.tf](addons/datadog.tf): 5 métricas de log, 10 monitores, 5 synthetics com 1 SLO e 1 dashboard (output `datadog_dashboard_url`). Os synthetics leem a URL do API Gateway por data source.
+- Criar os recursos do Datadog no módulo local [addons/modules/datadog/](addons/modules/datadog), chamado por [datadog.tf](addons/datadog.tf): 5 métricas de log, 10 monitores, 5 synthetics com 1 SLO e 1 dashboard (output `datadog_dashboard_url`). Os synthetics leem a URL do API Gateway por data source.
 - O Agent e o módulo têm `count` por `datadog_enabled`. Com `false` (`DD_ENABLED=false` no CI), os dois saem no próximo apply.
 
 No CI, as chaves e as opções do Datadog chegam por `TF_VAR_datadog_*`, a partir dos secrets e variables do GitHub. Localmente, as chaves vão por `TF_VAR_datadog_*`, e as opções ficam no `terraform.tfvars` ([README.md](README.md#4-instale-os-addons)). Detalhes em [DATADOG.md](DATADOG.md).

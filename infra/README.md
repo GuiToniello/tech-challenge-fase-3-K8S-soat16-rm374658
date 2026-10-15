@@ -3,7 +3,7 @@
 Tutorial resumido para criar a infraestrutura deste repositório a partir da sua máquina. Existem duas configurações Terraform independentes:
 
 - `foundation/`: VPC, subnets públicas e privadas, security groups, IAM, EKS, node group, access entries e o acesso externo às APIs (API Gateway, VPC Link e NLB interno).
-- `addons/`: Metrics Server e Datadog Agent via Helm, e os recursos do Datadog no módulo local `addons/datadog/` (métricas de log, monitores, synthetics, SLO e dashboard). Detalhes em [DATADOG.md](DATADOG.md).
+- `addons/`: Metrics Server e Datadog Agent via Helm, e os recursos do Datadog no módulo local `addons/modules/datadog/` (métricas de log, monitores, synthetics, SLO e dashboard). Detalhes em [DATADOG.md](DATADOG.md).
 
 O state usa o bucket S3 externo `terraform-state-soat16`, com lock nativo (`use_lockfile`) e estas chaves:
 

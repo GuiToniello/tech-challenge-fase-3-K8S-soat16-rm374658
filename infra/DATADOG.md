@@ -32,9 +32,9 @@ O [datadog-agent.tf](addons/datadog-agent.tf) instala o chart `datadog/datadog` 
 
 O `service` e o `env` de cada pod vêm dos labels `tags.datadoghq.com/*` dos Deployments ([k8s/README.md](../k8s/README.md#44-labels-do-datadog-unified-service-tagging)). Só os pods criados com o Agent já rodando recebem o tracer: por isso o Deploy aplica o addons antes do K8s Apply com restart.
 
-### 1.2 Recursos no Datadog (módulo `addons/datadog/`)
+### 1.2 Recursos no Datadog (módulo `addons/modules/datadog/`)
 
-O [datadog.tf](addons/datadog.tf) chama o módulo local [addons/datadog/](addons/datadog):
+O [datadog.tf](addons/datadog.tf) chama o módulo local [addons/modules/datadog/](addons/modules/datadog):
 
 | Arquivo | Recursos |
 |---|---|

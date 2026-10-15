@@ -14,7 +14,7 @@ Tudo fica na AWS, região `us-east-1`, em duas configurações Terraform indepen
 | Configuração | State | Recursos |
 |---|---|---|
 | [infra/foundation](infra/foundation) | `techchallenge-oficina/k8s-foundation.tfstate` | VPC `10.0.0.0/16`, subnets públicas e privadas (2 AZs), Internet Gateway e rotas, SGs do cluster e dos nodes, IAM roles, EKS `techchallenge-oficina-eks` (1.36), node group `t3.small` (2/2/2), access entries e o acesso externo: API Gateway (HTTP API, com o Lambda authorizer e a rota `/auth/token` do repo LAMBDA), VPC Link e NLB interno |
-| [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | Metrics Server e Datadog Agent, via Helm, e os recursos do Datadog no módulo [datadog/](infra/addons/datadog): métricas de log, monitores, synthetics, SLO e dashboard ([infra/DATADOG.md](infra/DATADOG.md)) |
+| [infra/addons](infra/addons) | `techchallenge-oficina/k8s-addons.tfstate` | Metrics Server e Datadog Agent, via Helm, e os recursos do Datadog no módulo [modules/datadog/](infra/addons/modules/datadog): métricas de log, monitores, synthetics, SLO e dashboard ([infra/DATADOG.md](infra/DATADOG.md)) |
 
 Os manifests em [k8s/](k8s) criam o namespace `oficina` e, para cada uma das cinco APIs (monolith, approval, createos, getos, status), um ConfigMap, um Deployment, um Service `NodePort` e um HPA. Também criam o Secret `oficina-api-secrets`. Os Deployments levam os labels `tags.datadoghq.com/env` e `tags.datadoghq.com/service`, que dão ao Datadog o `env` e o `service` de cada API.
 
